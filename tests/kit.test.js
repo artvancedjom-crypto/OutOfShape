@@ -195,3 +195,78 @@ test('stacking on bricks and placement rules; tag rename reaches the program', (
   assert.equal(d.program.source, 'MainDrive := Mot1_OK AND NOT mot2_ok; (* Mot1_Running stays *)');
   const again = loadScene(d); assert.equal(again.elements.find((e) => e.name === 'Mot1').io.run.tag, 'MainDrive');
 });
+
+// ---- the six templates, built from kit elements ----------------------------------------
+import { templateScene, SCENE_TEMPLATE_IDS, applyDocParams, SCENE_TEMPLATES } from '../src/kit/templates.js';
+import { footprint } from '../src/kit/sim.js';
+
+test('templates: every element stands free, tags are unique, programs compile', () => {
+  for (const id of SCENE_TEMPLATE_IDS) {
+    const d = templateScene(id);
+    for (const el of d.elements) assert.ok(placement(d, el).ok, `${id}: ${el.name} overlaps something (${JSON.stringify(footprint(el))})`);
+    const tags = ioList(d).map((r) => r.name.toUpperCase()); assert.equal(new Set(tags).size, tags.length, id);
+    rig(d);
+  }
+  assert.equal(SCENE_TEMPLATES.length, 6);
+});
+
+test('template motor: seal-in, stop, e-stop, overload trip', () => {
+  const d = templateScene('motor'); const r = rig(d);
+  r.run(0.5); assert.equal(r.out('Motor_Run'), false);
+  r.press('Start'); assert.equal(r.out('Motor_Run'), true); assert.equal(r.out('Lamp_Run'), true); r.run(4); assert.ok(r.st('Belt').v > 2.9);
+  r.press('Stop'); assert.equal(r.out('Motor_Run'), false);
+  r.press('Start'); r.sim.operate(r.el('E_Stop'), 'down'); r.run(0.1); assert.equal(r.out('Motor_Run'), false); assert.equal(r.out('Lamp_Fault'), true);
+  r.press('Start'); assert.equal(r.out('Motor_Run'), false, 'no restart while the e-stop is latched');
+  r.sim.operate(r.el('E_Stop'), 'down'); r.run(0.1); r.el('Motor').params.load = 150; r.press('Start'); r.run(5);
+  assert.equal(r.st('Motor').tripped, true); assert.equal(r.out('Motor_Run'), false); assert.equal(r.out('Lamp_Fault'), true);
+  r.run(30); assert.equal(r.st('Motor').tripped, false, 'thermal contact resets when cooled'); assert.equal(r.out('Motor_Run'), false, 'no automatic restart');
+});
+
+test('template traffic: 3 minutes, cars pass in both directions, no crash, pedestrians get Walk', () => {
+  const d = templateScene('traffic'); const r = rig(d);
+  let walk = 0; let both = 0;
+  r.sim.operate(r.el('Ped_Button'), 'down'); r.run(0.5); r.sim.operate(r.el('Ped_Button'), 'up');
+  for (let k = 0; k < 180 * 50; k++) { r.sim.step(0.02); r.rt.scan(20); if (r.out('Walk')) walk++; if ((r.out('NS_Green') || r.out('NS_Yellow')) && (r.out('EW_Green') || r.out('EW_Yellow'))) both++; }
+  assert.equal(r.sim.crashes, 0, 'crashes'); assert.equal(both, 0, 'conflicting signals');
+  assert.ok(r.st('Exit_S').n >= 10 && r.st('Exit_E').n >= 10, `through: ${r.st('Exit_S').n} / ${r.st('Exit_E').n}`); assert.ok(walk > 50);
+  // a broken program (both green) does crash: the scene really checks
+  d.program = { lang: 'ST', source: 'NS_Green := TRUE; EW_Green := TRUE;' };
+  const bad = rig(d); bad.run(120); assert.ok(bad.sim.crashes > 0, 'both green must lead to crashes');
+});
+
+test('template tank: level stays between the setpoints, no overflow; document values apply', () => {
+  const d = templateScene('tank'); const r = rig(d);
+  let lo = 100; let hi = 0;
+  r.run(40);
+  for (let k = 0; k < 200 * 50; k++) { r.sim.step(0.02); r.rt.scan(20); const l = r.st('Tank').vol / 10; lo = Math.min(lo, l); hi = Math.max(hi, l); }
+  assert.ok(lo > 27 && hi < 83, `band ${lo.toFixed(1)}..${hi.toFixed(1)}`); assert.equal(r.st('Tank').overflow, 0); assert.ok(r.st('Consumer').total > 1000);
+  const d2 = templateScene('tank');
+  assert.deepEqual(applyDocParams(d2, 'tank', { capacity: 2000, inflow: 80, outflow: 45, spLow: 25, spHigh: 85 }).sort(), ['Pump.rate', 'SP_High.value', 'SP_Low.value', 'Tank.capacity', 'Valve_Out.rate']);
+  assert.equal(d2.elements.find((e) => e.name === 'Tank').params.capacity, 2000); assert.equal(d2.elements.find((e) => e.name === 'SP_High').params.value, 85);
+});
+
+test('template conveyor: sorts tall and small without mistakes', () => {
+  const r = rig(templateScene('conveyor'));
+  r.press('Start'); r.run(120);
+  const t = r.st('Bin_Tall'); const s = r.st('Bin_Small');
+  assert.ok(t.ok >= 5 && s.ok >= 5, `tall ${t.ok}, small ${s.ok}`); assert.equal(t.wrong + s.wrong, 0);
+  assert.equal(r.rt.get('C_Tall').CV, t.ok); assert.ok(Math.abs(r.rt.get('C_Small').CV - s.ok) <= 1);
+});
+
+test('template bottling: bottles are filled and capped, nothing spilled, batch stops the line', () => {
+  const r = rig(templateScene('bottling'));
+  r.press('Start'); r.run(150);
+  const c = r.st('Crate');
+  assert.ok(c.ok >= 12, `good bottles ${c.ok}`); assert.equal(c.wrong, 0); assert.equal(r.st('Fill').spilled, 0); assert.equal(r.st('Cap').hits, 0);
+  assert.equal(r.out('Lamp_Done'), true); assert.equal(r.out('Conveyor_Run'), false, 'line stops after the batch of 12');
+  const before = c.ok; r.press('Reset_Count'); r.press('Start'); r.run(20); assert.ok(r.st('Crate').ok > before);
+});
+
+test('template elevator: serves calls in travel order, never moves with the door open', () => {
+  const r = rig(templateScene('elevator'));
+  r.press('Call_3'); r.press('Call_2'); r.run(4);
+  assert.equal(r.inp('Lift_F2'), true, 'stops at floor 2 on the way up'); assert.equal(r.out('Lamp_Call2'), false); assert.equal(r.out('Lamp_Call3'), true);
+  r.run(12); assert.equal(r.inp('Lift_F3'), true); r.run(6);
+  r.press('Call_1'); r.run(14); assert.equal(r.inp('Lift_F1'), true);
+  const s = r.st('Lift'); assert.equal(s.violations, 0); assert.equal(s.overtravel, 0); assert.ok(s.stops >= 3);
+});

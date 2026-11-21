@@ -265,7 +265,7 @@ export class KitSim {
             const or = itemRect(o);
             if (!overlap(grown, or)) continue;
             // crossing traffic: two moving things with different headings meet
-            if (Math.abs(o.hx * it.hx + o.hz * it.hz) < 0.5 && (o.moving || o.kind === 'car') && it.kind === 'car' && overlap(nxt, or)) {
+            if (Math.abs(o.hx * it.hx + o.hz * it.hz) < 0.5 && it.kind === 'car' && o.kind === 'car' && o.moving && !o.crashed) {
               this.crashes++;
               it.crashed = o.crashed = true; it.crashT = o.crashT = 3;
             }

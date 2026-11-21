@@ -29,6 +29,13 @@ function travel(W, el, pos, target, time, dt) {
   return target > pos ? Math.min(target, pos + d) : Math.max(target, pos - d);
 }
 
+/** The bottle whose centre stands under the tool of a filler / capper (1 stud in front of it). */
+function under(W, el) {
+  const r = W.front(el, 0.5, 1, 1);
+  const cx = (r.x1 + r.x2) / 2; const cz = (r.z1 + r.z2) / 2;
+  return W.itemsIn(r, null).find((i) => i.kind === 'bottle' && Math.abs(i.x - cx) < 0.35 && Math.abs(i.z - cz) < 0.6);
+}
+
 const analogIn = (W, el, key, value, lo, hi) => W.in(el, key, Math.round(clamp((value - lo) / (hi - lo), 0, 1) * RAW));
 
 /** @type {Record<string, any>} */
@@ -55,14 +62,14 @@ export const KIT = {
   },
   road: {
     name: 'Road (vehicles drive by themselves)', cat: 'Material flow', tag: 'Road', h: 0.1,
-    size: (el) => [el.params.length, 3],
-    params: [num('length', 'Length', 8, 2, 30, 'studs', 1), num('speed', 'Vehicle speed', 6, 1, 12, 'studs/s', 0.5)],
+    size: (el) => [el.params.length, 4],
+    params: [num('length', 'Length', 8, 2, 30, 'studs', 2), num('speed', 'Vehicle speed', 6, 1, 12, 'studs/s', 0.5)],
     io: () => [],
     init: () => ({}),
     act(el, st, W) { const [fx, fz] = W.fwd(el); W.carrier(el, el.params.speed * fx, el.params.speed * fz); },
   },
   crossing: {
-    name: 'Road crossing', cat: 'Material flow', tag: 'Cross', h: 0.1, size: () => [3, 3],
+    name: 'Road crossing', cat: 'Material flow', tag: 'Cross', h: 0.1, size: () => [4, 4],
     params: [], io: () => [], init: () => ({}),
     act(el, st, W) { W.carrier(el, 0, 0, true); }, // vehicles keep their heading
   },
@@ -301,7 +308,7 @@ export const KIT = {
     init: () => ({ on: false, spilled: 0 }),
     act(el, st, W, dt) {
       st.on = !!W.out(el, 'valve') && !W.jammed(el);
-      const b = W.itemsIn(W.front(el, 0.5, 1, 1), null).find((i) => i.kind === 'bottle');
+      const b = under(W, el);
       st.bottle = b || null;
       if (!st.on) return;
       if (!b) { st.spilled += dt; return; }
@@ -314,16 +321,16 @@ export const KIT = {
   capper: {
     name: 'Capping press', cat: 'Actuators', tag: 'Cap', h: 6, size: () => [2, 2],
     params: [num('time', 'Stroke time', 0.3, 0.1, 3, 's', 0.1)],
-    io: () => [B('press', 'out', 'Press down', '_Press'), B('down', 'in', 'Press is down', '_Down'), B('present', 'in', 'Bottle under the press', '_Bottle')],
+    io: () => [B('press', 'out', 'Press down', '_Press'), B('down', 'in', 'Press is down', '_Down'), B('up', 'in', 'Press is up', '_Up'), B('present', 'in', 'Bottle under the press', '_Bottle')],
     init: () => ({ pos: 0, hits: 0 }),
     act(el, st, W, dt) {
       st.pos = travel(W, el, st.pos, W.out(el, 'press') ? 1 : 0, el.params.time, dt);
-      const b = W.itemsIn(W.front(el, 0.5, 1, 1), null).find((i) => i.kind === 'bottle');
+      const b = under(W, el);
       st.bottle = b || null;
       if (b && st.pos > 0.9) b.capped = true;
       if (b && st.pos > 0.2 && Math.hypot(b.vx || 0, b.vz || 0) > 0.2) st.hits++; // belt moved under the lowered press
     },
-    sense(el, st, W) { W.in(el, 'down', st.pos > 0.98); W.in(el, 'present', !!st.bottle); },
+    sense(el, st, W) { W.in(el, 'down', st.pos > 0.98); W.in(el, 'up', st.pos < 0.02); W.in(el, 'present', !!st.bottle); },
     status: (el, st) => `${(st.pos * 100).toFixed(0)} % down${st.hits ? `, belt moved while down ×${st.hits}` : ''}`,
   },
 
