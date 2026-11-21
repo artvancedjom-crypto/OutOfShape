@@ -18,7 +18,18 @@ npm run build      # static production build in dist/ (open via any static serve
 npm run preview    # serve the production build
 ```
 
-Requires Node 18+ and a modern desktop browser with WebGL (Chrome, Edge, Firefox or Safari).
+Requires Node 22+ and a modern desktop browser with WebGL (Chrome, Edge, Firefox or Safari).
+
+### Windows desktop app (no browser, no npm for the end user)
+
+```bash
+npm run desktop          # build the web app and start it in the desktop shell (unpackaged)
+npm run dist             # portable .exe + portable .zip + installer → release/
+npm run dist:portable    # only the portable files
+npm run dist:installer   # only the installer
+```
+
+The portable version keeps its data in a `data/` folder next to the app; the installed version uses the normal per-user location. **⚙ → Export all data / Import data** moves everything between the browser, portable and installed versions as one ZIP. Build steps, the Electron-vs-Tauri decision, SmartScreen notes, troubleshooting and the list of what was tested are in [docs/DESKTOP.md](docs/DESKTOP.md).
 
 ### A 2-minute tour
 
@@ -100,11 +111,24 @@ Every circuit has sliders (E12-snapped log sliders for R and C), clickable switc
 ## Architecture
 
 ```
+electron/                 Windows desktop shell (Electron); not used by the browser version
+  main.cjs                data location, app:// file serving, window state, menu, dialogs, update check
+  preload.cjs             the narrow API the web app may call (window.desktop)
+scripts/
+  dist.mjs                one-command packaging → release/
+  builder-config.mjs      electron-builder settings (targets, names, signing placeholders)
+  copy-pdf-assets.mjs     bundles PDF.js character maps + standard fonts (runs before dev/build)
+  make-icon.mjs           regenerates build/icon.ico and icon.png from icon.svg
+build/                    icon.svg / icon.ico / icon.png, portable.flag marker
+docs/DESKTOP.md           desktop packaging guide
 src/
   main.js                 app shell, nav, routes
+  app-menu.js             ⚙ menu: backup export/import, open document, About, update check
+  platform/index.js       platform abstraction: browser vs desktop (file pickers, saving, native menu)
   styles.css              design tokens, light/dark themes, all view styles
   core/                   framework-free infrastructure
     db.js                 IndexedDB wrapper (docs, files, annotations, programs, thumbs)
+    backup.js             export/import of all data as one ZIP
     dom.js                h() element helper, toast, modal, prompt, unit formatting
     router.js             hash router (#/library, #/doc/:id, #/lab, #/plc/:id, #/circuit/:id)
     bus.js, theme.js      event bus, theme persistence
@@ -136,6 +160,7 @@ tests/                    node:test suites for the PLC engine, circuit solver an
 
 **Key decisions**
 
+- **One codebase for browser and desktop.** Views never call Electron or file inputs directly; they go through `src/platform/`. The desktop shell serves the unchanged static build from a private `app://` origin.
 - **Vanilla ES modules, Vite, Three.js, PDF.js, pdf-lib and perfect-freehand.** No UI framework: the views are small and imperative, and the heavy parts (3D, PDF, solvers) are framework-agnostic anyway. This keeps the bundle and the mental model small.
 - **The PLC engine is a compiler, not a canned animation.** ST is parsed to an AST and statically checked (undeclared variables, unknown FB pins, writes to inputs or constants), then compiled to closures. Ladder diagrams compile to ST, so both languages share one runtime, and the generated ST is visible to the learner.
 - **Process models are separate from the PLC.** Each scenario's `update(dt)` reads only PLC outputs and writes only sensor inputs. The view interleaves process and scan at a fixed 20 ms step, so behaviour doesn't depend on frame rate (rendering is decoupled in `render(dt)`).
@@ -167,4 +192,5 @@ tests/                    node:test suites for the PLC engine, circuit solver an
 - Text annotations use the standard Helvetica font on export (WinAnsi characters only; others are transliterated). The eraser removes whole objects (no partial erasing), and there is no lasso selection.
 - Office formats (DOCX/PPTX) are not imported. Export them to PDF first.
 - First-person mode uses pointer lock. In embedded or iframe contexts where that is blocked, it falls back to drag-to-look.
+- The Windows desktop files were built but not run on Windows; see the tested/untested list in `docs/DESKTOP.md`.
 - For debugging, the PLC view exposes `window.__oos = { world, rt, sim }`.

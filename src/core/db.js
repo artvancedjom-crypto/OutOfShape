@@ -49,7 +49,11 @@ export const db = {
   put: (store, value, key) => tx(store, 'readwrite', (s) => (key === undefined ? s.put(value) : s.put(value, key))),
   del: (store, key) => tx(store, 'readwrite', (s) => s.delete(key)),
   all: (store) => tx(store, 'readonly', (s) => s.getAll()),
+  keys: (store) => tx(store, 'readonly', (s) => s.getAllKeys()),
+  clear: (store) => tx(store, 'readwrite', (s) => s.clear()),
 };
+
+export const STORE_NAMES = Object.keys(STORES);
 
 export function uid(prefix = 'id') {
   return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

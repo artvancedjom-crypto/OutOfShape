@@ -1,4 +1,6 @@
 node_modules/
 dist/
+release/
+public/pdfjs/
 *.log
 .DS_Store

@@ -4,11 +4,11 @@ import { listDocs, importFile, importPdfBytes, deleteDoc, getThumb, updateDoc, A
 import { blankNotebook } from '../docs/pdf.js';
 import { SAMPLES, sampleBytes } from '../docs/samples.js';
 import { launchUrl } from './launch.js';
+import { platform } from '../platform/index.js';
 
 export async function libraryView(root) {
   clear(root);
   document.getElementById('crumb').textContent = '';
-  const fileInput = h('input', { type: 'file', accept: ACCEPT, multiple: true, style: { display: 'none' } });
   const grid = h('div', { class: 'doc-grid' });
   const search = h('input', { class: 'input', placeholder: 'Search documents (name or text)…', oninput: () => refresh() });
 
@@ -19,24 +19,25 @@ export async function libraryView(root) {
         search,
         h('button', { class: 'btn', onclick: newNotebook }, '＋ Notebook'),
         h('button', { class: 'btn', onclick: loadSamples }, '✨ Sample documents'),
-        h('button', { class: 'btn primary', onclick: () => fileInput.click() }, '⬆ Import'),
+        h('button', { class: 'btn primary', onclick: async () => handleFiles(await platform.pickFiles({ accept: ACCEPT, multiple: true })) }, '⬆ Import'),
       )),
     h('div', { class: 'dropzone', id: 'dropzone' }, h('div', {}, h('b', {}, 'Drop files here'), ' — PDF, PNG/JPG/WebP images, TXT or Markdown')),
     grid,
-    fileInput,
   );
   root.append(page);
 
-  fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
   const dz = page.querySelector('#dropzone');
+  // listeners live on the shared #view element, so they are removed again in destroy()
   const over = (e) => { e.preventDefault(); dz.classList.add('over'); };
-  root.addEventListener('dragover', over);
-  root.addEventListener('dragleave', () => dz.classList.remove('over'));
-  root.addEventListener('drop', (e) => {
+  const leave = () => dz.classList.remove('over');
+  const drop = (e) => {
     e.preventDefault();
     dz.classList.remove('over');
     handleFiles([...(e.dataTransfer.files || [])]);
-  });
+  };
+  root.addEventListener('dragover', over);
+  root.addEventListener('dragleave', leave);
+  root.addEventListener('drop', drop);
 
   async function handleFiles(files) {
     for (const f of files) {
@@ -113,5 +114,11 @@ export async function libraryView(root) {
   }
 
   refresh();
-  return { destroy() {} };
+  return {
+    destroy() {
+      root.removeEventListener('dragover', over);
+      root.removeEventListener('dragleave', leave);
+      root.removeEventListener('drop', drop);
+    },
+  };
 }

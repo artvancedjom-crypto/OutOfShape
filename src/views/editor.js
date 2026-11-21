@@ -1,4 +1,5 @@
-import { h, clear, toast, download, modal } from '../core/dom.js';
+import { h, clear, toast, modal } from '../core/dom.js';
+import { platform } from '../platform/index.js';
 import { navigate } from '../core/router.js';
 import { uid } from '../core/db.js';
 import { getDoc, getFile, getAnnotations, saveAnnotations, updateDoc } from '../docs/store.js';
@@ -547,8 +548,8 @@ export async function editorView(root, docId, q = {}) {
       const pagesAnn = {};
       for (const [i, objs] of Object.entries(ann.pages)) pagesAnn[i] = objs.filter((o) => vis.has(o.layer));
       const out = await exportAnnotatedPdf(bytes, pagesAnn);
-      download(new Blob([out], { type: 'application/pdf' }), `${meta.name} (annotated).pdf`);
-      toast('Exported annotated PDF (visible layers flattened)', 'ok');
+      const saved = await platform.saveFile(`${meta.name} (annotated).pdf`, out, { mime: 'application/pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+      if (saved) toast('Exported annotated PDF (visible layers flattened)', 'ok');
     } catch (e) {
       console.error(e);
       toast('Export failed: ' + e.message, 'err', 5000);

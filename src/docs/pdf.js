@@ -10,7 +10,17 @@ export { pdfjs };
 
 /** pdf.js detaches the buffer it receives, so always hand it a copy. */
 export function loadPdf(bytes) {
-  return pdfjs.getDocument({ data: new Uint8Array(bytes).slice(), isEvalSupported: false }).promise;
+  // CMaps and the 14 standard fonts ship with the app (copied to public/pdfjs by
+  // scripts/copy-pdf-assets.mjs), so CJK PDFs and PDFs without embedded fonts
+  // render offline and nothing is fetched from a CDN.
+  const base = new URL('pdfjs/', document.baseURI).href;
+  return pdfjs.getDocument({
+    data: new Uint8Array(bytes).slice(),
+    isEvalSupported: false,
+    cMapUrl: base + 'cmaps/',
+    cMapPacked: true,
+    standardFontDataUrl: base + 'standard_fonts/',
+  }).promise;
 }
 
 /** Extract text per page, with simple line reconstruction. */

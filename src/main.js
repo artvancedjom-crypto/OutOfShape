@@ -8,6 +8,7 @@ import { labView } from './views/lab.js';
 import { plcView } from './views/plc.js';
 import { circuitView } from './views/circuit.js';
 import { editorView } from './views/editor.js';
+import { appMenuButton, initAppIntegration } from './app-menu.js';
 
 applyTheme(getTheme());
 
@@ -21,6 +22,7 @@ function topbar() {
     h('nav', {}, link('/library', 'Library', '📚'), link('/lab', 'Simulation Lab', '🧪')),
     h('div', { class: 'spacer' }),
     h('span', { id: 'crumb', class: 'crumb' }),
+    appMenuButton(),
     themeBtn,
   );
   const mark = () => {
@@ -43,4 +45,5 @@ route('/circuit/:id', (p, q) => circuitView(viewEl(), p.id, q));
 route('/doc/:id', (p, q) => editorView(viewEl(), p.id, q));
 
 topbar();
+initAppIntegration();
 startRouter();
