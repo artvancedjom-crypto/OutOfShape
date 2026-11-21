@@ -2,7 +2,7 @@
 
 A browser-only learning studio that combines:
 
-- **PLC simulation in 3D**: six classic automation exercises in a chunky toy-brick world, driven by a real IEC 61131-3 PLC engine that you program in Structured Text or Ladder Diagram.
+- **A PLC plant construction kit in 3D**: build plants from chunky toy-brick elements (conveyors, cylinders, tanks, sensors, buttons …) on a studded baseplate. Every element is wired to the PLC automatically, and a real IEC 61131-3 engine runs your Structured Text or Ladder program against it. Six classic exercises ship as editable templates.
 - **Electronic circuit simulation**: standard teaching circuits solved with Modified Nodal Analysis, shown as live SVG schematics with an oscilloscope.
 - **A note-taking PDF editor** (in the spirit of GoodNotes/Notability) that reads your documents, recognises when they describe one of the simulations, and launches it pre-configured with the document's values.
 
@@ -13,7 +13,7 @@ There is no backend and there are no paid services. Everything, including PDF pa
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 41 unit tests: PLC engine, circuit solver, netlist, catalog, PDF matcher
+npm test           # 56 unit tests: PLC engine, plant kit, circuit solver, netlist, catalog, PDF matcher
 npm run test:e2e   # end-to-end tests in a headless browser (needs Playwright, see tests/e2e/README.md)
 npm run build      # static production build in dist/ (open via any static server)
 npm run preview    # serve the production build
@@ -37,22 +37,54 @@ The portable version keeps its data in a `data/` folder next to the app; the ins
 1. **Library → ✨ Sample documents** adds five generated PDFs: a traffic-light lab sheet, an RC experiment, a tank spec, an electronics handout and a motor-control worksheet. Each card already shows its matched simulation and a confidence score.
 2. Open **“Experiment – RC Time Constant”**. Draw with the pen (P) or highlighter (H), add a text box (T) and a shape (R), then use **⬇ Export PDF**.
 3. In the right panel, expand **“Why?”** under *RC Charging & Discharging* to see the keyword hits and the extracted values (R = 22 kΩ, C = 47 µF, V = 9 V). Press **▶ Launch**. The circuit opens with those values, and **← Experiment…** takes you back to the same page.
-4. **Simulation Lab → Traffic Light Intersection.** The solution program is already running. Press **🚶 First person** (or C) and walk around with WASD and the mouse. Click the yellow pedestrian button. Then open **Program ▾ → Exercise starter** and write your own controller.
+4. **Simulation Lab → Traffic Light Intersection.** The solution program is already running. Press **🚶 Walk** (or C) and walk around with WASD and the mouse. Click the pedestrian button.
+5. **Simulation Lab → ＋ New empty plant.** Pick a push button and an indicator light from the palette and click them onto the baseplate. Open the **I/O map** tab to see `Btn1` at `%I0.0` and `Lamp1` at `%Q0.0`, type `Lamp1 := Btn1;` in the **Program** tab, press **Download & run**, switch to **▶ Operate** and click the button in the scene.
 
 ## What's included
 
-### 1. PLC scenarios (3D, toy-brick style)
+### 1. PLC plant construction kit (3D, toy-brick style)
 
-| Scenario | Difficulty | What you practise |
+**Templates.** Six plants are included. Each is built from ordinary kit elements, so you can move, replace, delete or rewire anything, and change the program. You edit your own copy; *File → Reset to template* restores the original and *Save as…* turns the copy into a plant of your own.
+
+| Template | Difficulty | What you practise |
 |---|---|---|
 | ⚙️ Motor start/stop with interlocks | Beginner | Seal-in circuit, NC stop, E-stop, thermal overload with a heat model (Ladder solution) |
-| 🚦 Traffic light intersection | Intermediate | CASE state machine, timers, car-detection loops, pedestrian request, night flashing. The sim counts signal conflicts and crashes |
-| 🛢️ Tank level control | Intermediate | Hysteresis (two-point) control, analog transmitter with adjustable noise, dry-run and overflow protection, auto/manual |
+| 🚦 Traffic light intersection | Intermediate | CASE state machine, timers, car-detection loops, pedestrian request, night flashing. The plant counts crashes |
+| 🛢️ Tank level control | Intermediate | Hysteresis (two-point) control, analog transmitter, dry-run and overflow protection, auto/manual |
 | 📦 Conveyor sorting station | Intermediate | Edge detection (R_TRIG), tracking latch, pneumatic pusher with limit switches, CTU counters, mis-sort detection |
-| 🍾 Bottling line (fill & cap) | Advanced | Indexing step chain with parallel stations, level sensor, batch counter, "moved while capper down" detection |
-| 🛗 3-floor elevator | Advanced | Call memory, direction preference, door cycle, interlocks and overtravel. You can ride the car in first-person mode |
+| 🍾 Bottling line (fill & cap) | Advanced | Indexing step chain, filling and capping stations, batch counter |
+| 🛗 3-floor elevator | Advanced | Call memory, direction preference, door cycle, interlocks |
 
-Each scenario has a working solution, an exercise starter, objectives, an I/O assignment table (with `%I`/`%Q` addresses), tunable process parameters and HMI setpoints. Every process is physics-driven and reacts only to the PLC outputs; nothing is pre-animated.
+**Building**
+- Pick an element from the palette, move the green/red ghost over the baseplate and click. Elements snap to the stud grid. `R` rotates, `Esc` stops placing.
+- Click selects, Shift-click adds to the selection, drag moves (the move is refused if the space is taken). `Del` deletes, `Ctrl+D` duplicates, `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo.
+- Bricks can be stacked, and other elements can stand on bricks.
+- Build in the overview camera (orbit, pan, zoom), then press `C` to walk through the plant in first person and operate it.
+
+**Kit elements** (each has its own behaviour model and parameters)
+
+| Group | Elements |
+|---|---|
+| Actuators | conveyor belt (speed, direction, optional analog speed), motor (load, thermal trip), pump, valve (on/off or proportional), single- and double-acting cylinder, gate/barrier, indicator light, horn, traffic light, elevator car with shaft, mixer, heater, filling station, capping press |
+| Sensors | light barrier, inductive and capacitive proximity switch, colour sensor, limit switch, level switch, analog level transmitter (4–20 mA or 0–10 V), pressure and temperature sensor, encoder, scale |
+| Operating | push button (NO/NC), switch, latching emergency stop, selector switch, potentiometer, numeric setpoint |
+| Material flow | workpiece source (cycle, kind, size, material, colour), sink/bin (can check what it expects), tank, reservoir, drain/consumer, pipes and elbows with simple flow, road and crossing for cars |
+| Structure | bricks in any size and colour |
+
+**Plug-and-play I/O**
+- A placed element gets the next free address (`%I0.0`, `%Q0.0`, `%IW64`, `%QW64` …) and a symbolic tag (`Conv1_Run`, `LB1`), at once usable in the ST and ladder editors.
+- The **I/O map** tab lists every signal with tag, address, element and live value. Tags and addresses are editable there. Duplicates, wrong areas (an input on `%Q`) and keywords are refused with a message. Renaming a tag also renames it in the program.
+- *View → Cables to the PLC rack* draws a cable from each element to the virtual PLC rack.
+
+**Your own kit elements**
+- Select several elements and use *Save as group…*; the group appears in the palette and is placed as one piece.
+- *My elements → New element type* makes a new sensor or actuator type: choose the behaviour class, set its parameters and signal type, give it a name, a tag prefix and optionally a look from brick shapes and colours.
+- Groups and element types are exported and imported as JSON, in the same catalog format as the circuit parts.
+
+**Testing aids**
+- **Fault injection** per element: sensor stuck at 0, stuck at 1, wire break; actuator jammed, slow, wire break.
+- **Forcing** of inputs and outputs from the I/O map. Forced rows are highlighted and a blinking FORCED badge is shown in the toolbar.
+- **Watch table** for signals, timers, counters and program variables, and a **trace** that records up to 8 of them over the last 30 s, with pause, clear and CSV export.
 
 **PLC workbench features**
 - **Structured Text** editor with syntax highlighting, line numbers and error lines. Supported: `VAR`/`VAR CONSTANT`, `IF/ELSIF/ELSE`, `CASE` (ranges and constants), `FOR/WHILE/REPEAT/EXIT/RETURN`, arithmetic, boolean and bitwise operators, `T#1m2s500ms` literals, `ABS/MIN/MAX/LIMIT/SEL/…`, `*_TO_*` conversions, and the `TON/TOF/TP`, `CTU/CTD/CTUD`, `R_TRIG/F_TRIG` and `SR/RS` function blocks.
@@ -61,14 +93,10 @@ Each scenario has a working solution, an exercise starter, objectives, an I/O as
   - Coil, negated coil, set and reset outputs.
   - TON/TOF/TP timers and CTU/CTD counters.
   - Live power-flow highlighting while running.
-  - Compiles to ST; use "View generated ST" to see the result.
-- **CPU modes**: RUN/STOP (outputs drop out in STOP), single-scan stepping, reset, and 0.25×–4× speed. The scan cycle is a fixed 20 ms of simulated time. A watchdog catches endless loops, and runtime faults show the offending line.
-- **Live I/O panel**:
-  - Inputs, outputs, internal variables, and timers/counters with ET/PT and CV/PV bars.
-  - Manual push/toggle buttons.
-  - **Forcing** of any I/O point (none → TRUE → FALSE).
-- **Programs**: the working copy autosaves. You can also *Save*/*Save as*, export or import `.json`/`.st` files, and browse saved programs under Lab → My programs.
-- **Cameras**: an orbit/pan/zoom overview, and a first-person mode with WASD, Shift to run, pointer-lock mouse look (drag-look fallback), collisions, and clicking scene buttons through the crosshair.
+  - Compiles to ST; switching a ladder program to ST shows the generated code.
+- **CPU modes**: RUN/STOP (outputs drop out in STOP), reset, and 0.25×–4× speed. The scan cycle is a fixed 20 ms of simulated time. A watchdog catches endless loops, and runtime faults show the offending line.
+- **Saving**: a plant and its program are one document and autosave together. Plants are exported and imported as `.json`.
+- **Cameras**: an orbit/pan/zoom overview, and a first-person mode with WASD, Shift to run, pointer-lock mouse look (drag-look fallback), and clicking buttons through the crosshair.
 
 ### 2. Circuit construction kit
 
@@ -121,14 +149,14 @@ Every circuit is fully editable, whether it started as a template or as an empty
 
 ### 5. Simulations inside documents
 
-- **Embed:** the 🧪 tool inserts a circuit or a PLC scene on a page as an object with a snapshot and a table of key values.
+- **Embed:** the 🧪 tool inserts a circuit or a PLC plant (a template or one of your own) on a page as an object with a snapshot and a table of key values.
 - **Jump in:** double-click the object. The simulation opens in exactly that state with a zoom transition.
 - **Jump back:** the back button returns to the same page, zoom and scroll position. If you changed something you choose *Apply changes*, *Save as new version* or *Discard*. Leaving any other way keeps a draft, and the object shows an "unapplied changes" marker.
 - **Ownership:** an embed is its own instance; the template and other documents are not touched. *Linked* embeds share one simulation, and applying a change updates every linked place.
 - **Undo/redo** in the document covers applying.
 - **PDF export** flattens the snapshot as an image and keeps the title and the value table as text.
 
-A PLC embed stores the scenario, its parameters and its program. It does not store the momentary process state (for example the current tank level).
+A PLC embed stores the whole plant (elements, I/O map, program) and opens as an editable kit plant. It does not store the momentary process state (for example the current tank level).
 
 ## Architecture
 
@@ -178,7 +206,15 @@ src/
   three/                  3D layer
     bricks.js             studded brick geometry kit (merged + cached), lamps, buttons, labels
     world.js              renderer, lighting, baseplate, orbit + FPS cameras, picking, collisions
-  scenarios/              one module per PLC exercise + registry (index.js)
+  kit/                    PLC plant construction kit
+    elements.js           element definitions: size, parameters, signals, behaviour model, faults
+    sim.js                process simulation (no DOM or Three.js): workpieces, liquids, carriers
+    model.js              plant document (versioned schema), automatic addressing, placement rules
+    templates.js          the six built-in plants as editable documents
+    catalog.js            own element types and groups (same catalog as the circuit parts)
+    meshes.js, stage.js   brick meshes per element; 3D building and operating
+    snapshot.js, store.js picture + value table for document embeds; persistence
+  scenarios/index.js      plant templates in the shape the document matcher expects
   docs/                   document layer
     pdf.js                PDF.js loading, text extraction, txt/image/notebook → PDF
     store.js              import pipeline + persistence API
@@ -186,9 +222,9 @@ src/
     annotations.js        annotation model, canvas rendering, hit tests, pdf-lib export
     embeds.js, session.js embedded simulations (drafts, apply, links) and editor session memory
     samples*.js           built-in sample documents
-  ui/                     reusable widgets: ST code editor, ladder editor, live I/O panel
-  views/                  library, lab browser, PLC workbench, circuit lab, document editor
-tests/                    node:test suites: PLC engine, solver, circuit documents, catalog, matcher
+  ui/                     reusable widgets: ST code editor, ladder editor
+  views/                  library, lab browser, plant workbench, circuit lab, document editor
+tests/                    node:test suites: PLC engine, plant kit, solver, circuit documents, catalog, matcher
 tests/e2e/                Playwright end-to-end tests (npm run test:e2e)
 ```
 
@@ -197,33 +233,35 @@ tests/e2e/                Playwright end-to-end tests (npm run test:e2e)
 - **One codebase for browser and desktop.** Views never call Electron or file inputs directly; they go through `src/platform/`. The desktop shell serves the unchanged static build from a private `app://` origin.
 - **Vanilla ES modules, Vite, Three.js, PDF.js, pdf-lib and perfect-freehand.** No UI framework: the views are small and imperative, and the heavy parts (3D, PDF, solvers) are framework-agnostic anyway. This keeps the bundle and the mental model small.
 - **The PLC engine is a compiler, not a canned animation.** ST is parsed to an AST and statically checked (undeclared variables, unknown FB pins, writes to inputs or constants), then compiled to closures. Ladder diagrams compile to ST, so both languages share one runtime, and the generated ST is visible to the learner.
-- **Process models are separate from the PLC.** Each scenario's `update(dt)` reads only PLC outputs and writes only sensor inputs. The view interleaves process and scan at a fixed 20 ms step, so behaviour doesn't depend on frame rate (rendering is decoupled in `render(dt)`).
+- **Process models are separate from the PLC and from the 3D view.** Every kit element has an `act` step that reads only PLC outputs and a `sense` step that writes only sensor inputs. The plant simulation runs without DOM or Three.js (so it is unit-tested in Node) and is interleaved with the PLC scan at a fixed 20 ms step, so behaviour doesn't depend on frame rate.
 - **The circuit solver is general-purpose.** Circuits are data (netlist + layout), and new circuits need no solver changes.
 - **Annotations live in PDF points, outside the PDF**, which makes them resolution-independent, non-destructive, and straightforward to flatten.
 
 ### Extending
 
-- **New PLC scenario**: copy `src/scenarios/motor.js`. Define `io`, `params` (a param with `input:` feeds an HMI setpoint), `programs`, `match` and `build(world, io, params) → { reset, update, render, status }`, then add it to `scenarios/index.js`. It appears in the lab, the matcher and the link dialog automatically.
+- **New kit element**: add a definition to `src/kit/elements.js` (`size`, `params`, `io`, `init`, `act`, `sense`, `status`) and a mesh builder to `src/kit/meshes.js`. It appears in the palette and gets addresses automatically.
+- **New plant template**: add a builder to `src/kit/templates.js` and its description and match rules to `src/kit/template-meta.js`. It appears in the lab, the matcher and the insert dialog automatically.
 - **New circuit**: add an entry to `circuits/library.js` with components (with `sch` placement), wires, probes, params, readouts and match rules.
 - **New import format**: extend `fileToPdfBytes` in `docs/store.js`.
 
 ## Status: what is complete and what is limited
 
 **Complete and tested end to end (headless Chromium plus unit tests):**
-- Open a scenario, switch cameras, edit and run ST or ladder, and watch the 3D process react.
-- The I/O panel and forcing.
-- Saving programs.
-- The circuit lab.
-- Importing a PDF, annotating it, exporting it flattened, and launching the matched simulation with extracted parameters.
-- Manual links.
-- Persistence across reloads.
-- Dark and light themes.
-
-**Not built yet: the PLC construction kit.** The six PLC scenarios are still fixed scenes. Building your own plant from kit elements, automatic I/O addressing, the I/O mapping table, custom kit elements, fault injection and signal traces are open.
+- The plant kit: placing, moving, rotating, stacking, duplicating, deleting with undo/redo; automatic addresses; editing the I/O map; programming in ST; operating in the scene; forcing; fault injection; watch table and trace; groups and own element types with JSON export/import; templates (edit, save as, reset); first-person walking.
+- The circuit kit: editor, solver, current animation, catalog.
+- Documents: importing a PDF, annotating it, exporting it flattened, launching the matched simulation with extracted parameters, and simulations embedded in pages.
+- Persistence across reloads, backup export/import, dark and light themes.
 
 **Known limitations**
 - Circuit editor: redundant wire loops inside one net show current on only one path (the split is physically undetermined). Operating a switch inside a subcircuit from outside is not possible. The solver uses dense matrices; very large dynamic circuits slow the simulation down (the display stays responsive).
-- Embedded PLC scenes keep parameters and program, not the momentary process state.
+- Plant kit:
+  - Programs saved with version 1.0/1.1 were written for the fixed scenarios and their tag names. They are listed in the lab for download, but they do not run unchanged in the rebuilt templates. Document embeds of a 1.1 PLC scene open as the current template.
+  - Workpieces are carried by conveyors, pushed by cylinders and stopped by gates; they are not carried by the elevator car, and there is no free rigid-body physics (no tipping or piling up).
+  - Liquid flow is a simple volume balance per pipe run (pump or gravity); there is no pressure network. The pressure sensor reads the hydrostatic pressure of the tank next to it.
+  - Cables to the rack are a display aid; addresses are assigned in the I/O map, not by dragging cables.
+  - An own element type reuses the behaviour of a built-in class with its own parameters and look; new behaviour needs code (see *Extending*).
+  - Single-scan stepping from version 1.1 was not carried over.
+- Embedded PLC plants keep the plant and program, not the momentary process state.
 - The ST subset has no arrays, structs, user-defined functions or function blocks, `POINTERs`, or multiple tasks/POUs. Ladder has no compare or math boxes; use ST for those (a ladder program can be switched to its generated ST).
 - Circuits are DC operating point plus transient only (no AC small-signal / frequency analysis).
 - PDF pages with a `/Rotate` entry are displayed and annotated unrotated. Scanned PDFs without a text layer can't be matched automatically (no OCR), but you can still link them manually.
@@ -231,4 +269,4 @@ tests/e2e/                Playwright end-to-end tests (npm run test:e2e)
 - Office formats (DOCX/PPTX) are not imported. Export them to PDF first.
 - First-person mode uses pointer lock. In embedded or iframe contexts where that is blocked, it falls back to drag-to-look.
 - The Windows desktop files were built but not run on Windows; see the tested/untested list in `docs/DESKTOP.md`.
-- For debugging, the PLC view exposes `window.__oos = { world, rt, sim }`.
+- For debugging, the plant view exposes `window.__kit = { stage, sim, rt, doc }`.

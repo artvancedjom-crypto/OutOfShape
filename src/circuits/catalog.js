@@ -111,10 +111,18 @@ export function entryToDef(entry) {
   return entry.kind === 'subcircuit' ? subcircuitDef(entry) : variantDef(entry);
 }
 
+// Other parts of the app (the PLC kit) keep their own entries in the same catalog
+// store and JSON files; they plug in here with a validator and a register function.
+const EXTRA_KINDS = {};
+export function registerEntryKind(kind, handler) { EXTRA_KINDS[kind] = handler; }
+const kindOrder = () => ['variant', 'subcircuit', ...Object.keys(EXTRA_KINDS)];
+export const isCircuitEntry = (e) => e.kind === 'variant' || e.kind === 'subcircuit';
+
 export function validateEntry(entry) {
   if (!entry || typeof entry !== 'object') throw new Error('Not a catalog entry.');
-  if (!['variant', 'subcircuit'].includes(entry.kind)) throw new Error(`Unknown entry kind "${entry.kind}".`);
+  if (!kindOrder().includes(entry.kind)) throw new Error(`Unknown entry kind "${entry.kind}".`);
   if (!entry.name || !String(entry.name).trim()) throw new Error('The entry has no name.');
+  if (EXTRA_KINDS[entry.kind]) { EXTRA_KINDS[entry.kind].validate(entry); return entry; }
   if (entry.kind === 'variant') {
     if (!BUILTIN.has(entry.base)) throw new Error(`"${entry.name}" is based on the unknown model "${entry.base}".`);
     const base = PARTS[entry.base];
@@ -136,7 +144,8 @@ export function validateEntry(entry) {
 export function registerEntry(entry) {
   const e = migrate('catalogEntry', entry);
   validateEntry(e);
-  registerPart(e.id, entryToDef(e));
+  if (EXTRA_KINDS[e.kind]) EXTRA_KINDS[e.kind].register(e);
+  else registerPart(e.id, entryToDef(e));
   return e;
 }
 
@@ -149,7 +158,7 @@ export function ensureCatalog() {
   if (!loaded) {
     loaded = db.all('catalog').then((rows) => {
       // variants first, then subcircuits (which may contain variants)
-      for (const kind of ['variant', 'subcircuit']) {
+      for (const kind of kindOrder()) {
         for (const row of rows.filter((r) => r.kind === kind)) {
           try { registerEntry(row); } catch (e) { console.warn('Catalog entry skipped:', e.message); }
         }
@@ -214,6 +223,7 @@ export function exportEntries(entries) {
   const add = (e) => {
     if (all.has(e.id)) return;
     all.set(e.id, e);
+    if (EXTRA_KINDS[e.kind] && EXTRA_KINDS[e.kind].requires) for (const d of EXTRA_KINDS[e.kind].requires(e)) add(d);
     if (e.kind === 'subcircuit') for (const d of Object.values(defsUsedBy(e.circuit))) add(d);
   };
   entries.forEach(add);
@@ -230,7 +240,7 @@ export async function importEntries(text) {
   const existing = new Set((await listEntries()).map((e) => e.id));
   let added = 0;
   let updated = 0;
-  for (const kind of ['variant', 'subcircuit']) {
+  for (const kind of kindOrder()) {
     for (const e of list.filter((x) => x.kind === kind)) {
       if (existing.has(e.id)) updated++; else added++;
       await saveEntry(e);

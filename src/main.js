@@ -5,7 +5,7 @@ import { applyTheme, getTheme, toggleTheme } from './core/theme.js';
 import { bus } from './core/bus.js';
 import { libraryView } from './views/library.js';
 import { labView } from './views/lab.js';
-import { plcView } from './views/plc.js';
+import { sceneView } from './views/scene.js';
 import { circuitView } from './views/circuit.js';
 import { editorView } from './views/editor.js';
 import { appMenuButton, initAppIntegration } from './app-menu.js';
@@ -40,7 +40,7 @@ function topbar() {
 const viewEl = () => document.getElementById('view');
 route('/library', () => libraryView(viewEl()));
 route('/lab', (p, q) => labView(viewEl(), q));
-route('/plc/:id', (p, q) => plcView(viewEl(), p.id, q));
+route('/plc/:id', (p, q) => sceneView(viewEl(), p.id, q));
 route('/circuit/:id', (p, q) => circuitView(viewEl(), p.id, q));
 route('/doc/:id', (p, q) => editorView(viewEl(), p.id, q));
 

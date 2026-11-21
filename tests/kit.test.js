@@ -270,3 +270,39 @@ test('template elevator: serves calls in travel order, never moves with the door
   r.press('Call_1'); r.run(14); assert.equal(r.inp('Lift_F1'), true);
   const s = r.st('Lift'); assert.equal(s.violations, 0); assert.equal(s.overtravel, 0); assert.ok(s.stops >= 3);
 });
+
+// ---- custom kit elements -----------------------------------------------------------------
+import { registerEntry, exportEntries, validateEntry } from '../src/circuits/catalog.js';
+import { makeGroupEntry, addGroup, GROUPS, kitDefsUsedBy, registerSceneDefs } from '../src/kit/catalog.js';
+
+test('custom elements: a new sensor type and a saved group ("sorting station")', () => {
+  // configurator: behaviour class light barrier, own defaults, tag prefix and look
+  registerEntry({ kind: 'kit-variant', id: 'u_longbeam', name: 'Long-range light barrier', base: 'lightbarrier', tag: 'LBX', params: { range: 8 }, look: { shape: 'post', color: 'red', accent: 'white' } });
+  assert.throws(() => validateEntry({ kind: 'kit-variant', name: 'x', base: 'nope' }), /unknown behaviour class/);
+  assert.throws(() => validateEntry({ kind: 'kit-variant', name: 'x', base: 'lightbarrier', params: { range: 99 } }), /between/);
+  const d = newScene('custom');
+  addElement(d, 'spawner', -9, 0, 0, { cycle: 2 }); addElement(d, 'conveyor', -2, 0, 0, { length: 12 }); addElement(d, 'sink', 5.5, 0);
+  const lb = addElement(d, 'u_longbeam', -0.5, -6.5, 1);
+  assert.deepEqual(lb.io.s, { tag: 'LBX1', addr: '%I0.0' }); assert.equal(lb.params.range, 8);
+  d.program.source = 'Conv1_Run := TRUE;';
+  const r = rig(d); let seen = 0; for (let k = 0; k < 500; k++) { r.sim.step(0.02); r.rt.scan(20); if (r.inp('LBX1')) seen++; }
+  assert.ok(seen > 5, 'the 8-stud beam reaches the belt from 5 studs away');
+  assert.deepEqual(Object.keys(kitDefsUsedBy(d)), ['u_longbeam']);
+  // group: conveyor + light barrier + cylinder, saved and placed twice with fresh tags and addresses
+  const s = templateScene('conveyor');
+  const pick = ['Conveyor', 'PE_Tall', 'Pusher', 'PE_Pusher'].map((n) => s.elements.find((e) => e.name === n));
+  const entry = registerEntry({ ...makeGroupEntry('Sorting station', pick), id: 'u_station' });
+  assert.equal(GROUPS.get('u_station').elements.length, 4);
+  const n = newScene('two stations');
+  const a = addGroup(n, entry, 0, -8); const b = addGroup(n, entry, 0, 8);
+  assert.equal(n.elements.length, 8);
+  assert.deepEqual(a.map((e) => e.name), ['Conv1', 'LB1', 'Cyl1', 'LB2']); assert.deepEqual(b.map((e) => e.name), ['Conv2', 'LB3', 'Cyl2', 'LB4']);
+  const addrs = ioList(n).map((x) => x.addr); assert.equal(new Set(addrs).size, addrs.length); assert.equal(addrs.length, 12);
+  // relative layout is preserved
+  near(a[2].x - a[0].x, pick[2].x - pick[0].x, 1e-9); near(b[1].z - b[0].z, pick[1].z - pick[0].z, 1e-9);
+  for (const el of n.elements) assert.ok(placement(n, el).ok, el.name);
+  // JSON exchange carries both kinds; a scene carries the custom types it uses
+  const file = JSON.parse(exportEntries([entry, KIT.u_longbeam.entry])); assert.deepEqual(file.entries.map((e) => e.kind).sort(), ['kit-group', 'kit-variant']);
+  const saved = JSON.parse(JSON.stringify({ ...d, defs: kitDefsUsedBy(d) })); delete KIT.u_longbeam;
+  assert.equal(loadScene(saved).elements.length, 3); registerSceneDefs(saved); assert.equal(loadScene(saved).elements.length, 4);
+});

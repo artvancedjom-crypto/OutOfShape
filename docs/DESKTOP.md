@@ -175,7 +175,8 @@ Tested in a Linux container (no Windows machine was available):
 - **The desktop shell, running for real** (Electron 45 for Linux, same `electron/` and `dist/` code, driven by an automated script):
   - loads from `app://local` with the correct window title and no console errors;
   - makes no request to any outside address;
-  - renders PDFs through the bundled worker and runs a 3D PLC scenario;
+  - renders PDFs through the bundled worker and runs the 3D PLC plant templates;
+  - builds a PLC plant from kit elements by clicking in the 3D view, runs its program, finds the plant again after a restart, and restores it from a backup ZIP in an empty data folder;
   - stores IndexedDB, settings and `window-state.json` in the chosen data folder, and finds the documents again after a restart;
   - restores window size and position;
   - exports an annotated PDF and a backup ZIP through the save dialog (the dialog itself was replaced by a stub that returns a path);

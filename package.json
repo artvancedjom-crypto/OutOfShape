@@ -2,7 +2,7 @@
   "name": "outofshape-lab",
   "productName": "OutOfShape Lab",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "PLC + circuit simulation lab with a PDF note-taking editor. Runs in the browser and as a Windows desktop app.",
   "author": "OutOfShape",
   "repository": "github:artvancedjom-crypto/OutOfShape",

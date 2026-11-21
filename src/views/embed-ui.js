@@ -4,10 +4,12 @@
 import { h, toast } from '../core/dom.js';
 import { db, uid } from '../core/db.js';
 import { CIRCUITS } from '../circuits/library.js';
-import { SCENARIOS, getScenario } from '../scenarios/index.js';
+import { SCENE_TEMPLATES } from '../kit/templates.js';
+import { openScene, listUserScenes, saveScene, isSceneTemplate, sceneWorkingId } from '../kit/store.js';
+import { kitDefsUsedBy } from '../kit/catalog.js';
 import { openCircuit, listUserCircuits, saveCircuit, isTemplateId, workingId } from '../circuits/store.js';
 import { snapshotOf } from '../circuits/snapshot.js';
-import { plcSnapshotOf } from '../scenarios/snapshot.js';
+import { sceneSnapshotOf } from '../kit/snapshot.js';
 
 function overlayDialog(title, body, buttons) {
   return new Promise((resolve) => {
@@ -32,7 +34,8 @@ export async function insertSimulationDialog() {
   const group = (label, items) => { if (items.length) sel.append(h('optgroup', { label }, items.map(([v, t]) => h('option', { value: v }, t)))); };
   group('Circuit templates', CIRCUITS.map((c) => [`circuit:${c.id}`, `${c.icon} ${c.name}`]));
   group('My circuits', mine.map((c) => [`circuit:${c.id}`, `🔌 ${c.name}`]));
-  group('PLC scenes', SCENARIOS.map((s) => [`plc:${s.id}`, `${s.icon} ${s.name}`]));
+  group('PLC plant templates', SCENE_TEMPLATES.map((s) => [`plc:${s.id}`, `${s.icon} ${s.name}`]));
+  group('My plants', (await listUserScenes()).map((s) => [`plc:${s.id}`, `🏭 ${s.name}`]));
   sel.selectedIndex = 0;
   const own = h('input', { type: 'radio', name: 'emb-own', checked: true });
   const linked = h('input', { type: 'radio', name: 'emb-own' });
@@ -58,16 +61,16 @@ export async function insertSimulationDialog() {
           const snap = await snapshotOf(doc);
           return { kind, title: doc.name, state: JSON.parse(JSON.stringify(doc)), link, snapshot: snap.dataUrl, imgW: snap.width, imgH: snap.height, table: snap.table };
         }
-        const scn = getScenario(id);
-        let state = { scenarioId: id, params: Object.fromEntries(scn.params.map((p) => [p.key, p.default])), program: { name: 'Solution', ...JSON.parse(JSON.stringify(scn.programs.solution)) } };
+        const opened = await openScene(id);
+        const doc = opened.doc;
+        doc.defs = kitDefsUsedBy(doc);
         let link = null;
         if (linked.checked) {
-          link = { store: 'scenes', id: 'plcshared_' + id };
-          const row = await db.get('scenes', link.id);
-          if (row && row.state) state = row.state; else await db.put('scenes', { id: link.id, kind: 'plc-shared', state, updated: Date.now() });
+          if (isSceneTemplate(id)) { doc.id = sceneWorkingId(id); await saveScene(doc); }
+          link = { store: 'scenes', id: doc.id };
         }
-        const snap = await plcSnapshotOf(state);
-        return { kind, title: scn.name, state, link, snapshot: snap.dataUrl, imgW: snap.width, imgH: snap.height, table: snap.table };
+        const snap = await sceneSnapshotOf(doc);
+        return { kind, title: doc.name, state: JSON.parse(JSON.stringify(doc)), link, snapshot: snap.dataUrl, imgW: snap.width, imgH: snap.height, table: snap.table };
       } catch (e) {
         console.error(e);
         toast('Could not create the snapshot: ' + e.message, 'err', 6000);

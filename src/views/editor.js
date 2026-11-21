@@ -395,7 +395,7 @@ export async function editorView(root, docId, q = {}) {
     await saveAnnotations(docId, ann);
     const q2 = `doc=${encodeURIComponent(docId)}&page=${p.i}&obj=${encodeURIComponent(o.id)}`;
     await zoomIn(o.snapshot, embedRect(p, o));
-    navigate(o.kind === 'plc' ? `/plc/${o.state.scenarioId}?embed=1&${q2}` : `/circuit/embed?${q2}`);
+    navigate(o.kind === 'plc' ? `/plc/embed?${q2}` : `/circuit/embed?${q2}`);
   }
 
   async function insertEmbed() {

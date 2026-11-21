@@ -5,7 +5,7 @@ import { platform } from '../platform/index.js';
 import { PARTS, CATEGORY_ORDER } from '../circuits/parts.js';
 import {
   catalogList, favourites, toggleFavourite, saveEntry, deleteEntry, listEntries, exportEntries, importEntries,
-  characteristic, fitDiodeIs, MODEL_INFO, isBuiltin, subcircuitLayout, newEntryId, entryToDef, validateEntry,
+  characteristic, fitDiodeIs, MODEL_INFO, isBuiltin, newEntryId, entryToDef, validateEntry, isCircuitEntry,
 } from '../circuits/catalog.js';
 import { parseSI, editSI, formatSI } from '../circuits/units.js';
 
@@ -320,7 +320,7 @@ export async function openCatalogManager({ onChange } = {}) {
           try { const r = await importEntries(await f.text()); toast(`Imported ${r.added} new and ${r.updated} updated part(s): ${r.names.slice(0, 4).join(', ')}`, 'ok', 4500); drawList(); changed(); } catch (e) { toast('Import failed: ' + e.message, 'err', 6000); }
         } }, '⬆ Import JSON…'),
         h('button', { class: 'btn small', onclick: async () => {
-          const mine = await listEntries();
+          const mine = (await listEntries()).filter(isCircuitEntry);
           if (!mine.length) { toast('You have no own parts yet.', 'err'); return; }
           platform.saveFile('my-parts.catalog.json', exportEntries(mine), { mime: 'application/json', filters: [{ name: 'Catalog', extensions: ['json'] }] });
         } }, '⬇ Export my parts'))),

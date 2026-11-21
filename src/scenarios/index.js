@@ -1,12 +1,8 @@
-// Scenario registry. To add a scenario: create a module exporting the same
-// shape as motor.js (metadata, io, params, programs, match, build) and list it here.
-import motor from './motor.js';
-import traffic from './traffic.js';
-import tank from './tank.js';
-import conveyor from './conveyor.js';
-import bottling from './bottling.js';
-import elevator from './elevator.js';
+// The PLC plants that documents can be matched to. Since version 1.2 every plant is
+// a kit template (src/kit/templates.js); this module keeps the list in the shape
+// the document matcher expects.
+import { SCENE_TEMPLATES } from '../kit/templates.js';
 
-export const SCENARIOS = [motor, traffic, tank, conveyor, bottling, elevator];
+export const SCENARIOS = SCENE_TEMPLATES;
 export const getScenario = (id) => SCENARIOS.find((s) => s.id === id);
 export const DIFFICULTY_ORDER = { Beginner: 0, Intermediate: 1, Advanced: 2 };

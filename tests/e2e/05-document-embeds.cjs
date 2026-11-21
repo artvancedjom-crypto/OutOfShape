@@ -19,14 +19,14 @@ const { execFileSync } = require('child_process');
   page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
   const log = (...a) => console.log('✓', ...a);
   let lastView = null; // where the user was at the moment of jumping into the simulation
-  const embeds = () => page.evaluate(() => Object.entries(window.__ed.ann.pages).flatMap(([pg, objs]) => objs.filter((o) => o.type === 'embed').map((o) => ({ pg: +pg, id: o.id, title: o.title, kind: o.kind, snapLen: o.snapshot.length, snapHash: o.snapshot.length + ':' + o.snapshot.slice(-60), table: o.table, R: o.kind === 'circuit' ? (o.state.parts.find((p) => p.name === 'R1') || { params: {} }).params.R : null, params: o.state.params, link: o.link, x: o.x, y: o.y, w: o.w, h: o.h }))));
+  const embeds = () => page.evaluate(() => Object.entries(window.__ed.ann.pages).flatMap(([pg, objs]) => objs.filter((o) => o.type === 'embed').map((o) => ({ pg: +pg, id: o.id, title: o.title, kind: o.kind, snapLen: o.snapshot.length, snapHash: o.snapshot.length + ':' + o.snapshot.slice(-60), table: o.table, R: o.kind === 'circuit' ? (o.state.parts.find((p) => p.name === 'R1') || { params: {} }).params.R : null, capacity: o.kind === 'plc' ? (o.state.elements.find((x) => x.type === 'tank') || { params: {} }).params.capacity : null, link: o.link, x: o.x, y: o.y, w: o.w, h: o.h }))));
   const view = () => page.evaluate(() => ({ zoom: window.__ed.st.zoom, top: window.__ed.scroller.scrollTop, left: window.__ed.scroller.scrollLeft, page: window.__ed.st.current, undo: window.__ed.undo.length, drafts: [...window.__ed.drafts] }));
   const waitEditor = async () => { await page.waitForFunction(() => window.__ed && document.querySelector('.ann-c')); await page.waitForTimeout(700); };
   const dblOn = async (o) => { await page.evaluate((o) => { const ed = window.__ed; const p = ed.pages[o.pg]; ed.scroller.scrollTop = Math.max(0, p.wrap.offsetTop + o.y * ed.st.zoom - 120); }, o); await page.waitForTimeout(350); lastView = await view(); const r = await page.evaluate((o) => { const p = window.__ed.pages[o.pg]; const b = p.wrap.getBoundingClientRect(); const z = window.__ed.st.zoom; return [b.left + (o.x + o.w / 2) * z, b.top + (o.y + o.h / 2) * z]; }, o); await page.mouse.dblclick(r[0], r[1]); };
   const insert = async (value, linked) => { await page.click('button[title^="Insert simulation"]'); await page.waitForSelector('.modal select'); await page.selectOption('.modal select', value); if (linked) await page.locator('.modal input[type=radio]').nth(1).check(); await page.click('.modal-foot .btn.primary'); await page.waitForSelector('.modal', { state: 'detached', timeout: 30000 }); await page.waitForTimeout(500); };
   const setR = async (text) => { const [x, y] = await page.evaluate(() => { const { editor, doc } = window.__ce; const p = doc.parts.find((q) => q.name === 'R1'); const r = editor.svg.getBoundingClientRect(); return [r.left + editor.pan[0] + p.x * 20 * editor.zoom, r.top + editor.pan[1] + p.y * 20 * editor.zoom]; }); await page.mouse.dblclick(x, y); await page.waitForSelector('.modal .field:has-text("Resistance") input'); await page.fill('.modal .field:has-text("Resistance") input', text); await page.click('.modal-foot .btn.primary'); await page.waitForTimeout(500); };
   const back = async (choice) => { await page.click('#embed-back'); if (choice) { await page.waitForSelector('.modal-foot'); await page.click(`.modal-foot button[data-value="${choice}"]`); } await waitEditor(); };
-  const openEmbed = async (o) => { await page.keyboard.press('v'); await dblOn(o); await page.waitForFunction(() => location.hash.startsWith('#/circuit/embed') || location.hash.includes('embed=1')); };
+  const openEmbed = async (o) => { await page.keyboard.press('v'); await dblOn(o); await page.waitForFunction(() => location.hash.startsWith('#/circuit/embed') || location.hash.startsWith('#/plc/embed')); };
 
   // ---- set up: sample documents, open the two-page handout on page 2, zoomed and scrolled
   await page.goto(BASE + '#/library'); await page.waitForTimeout(600);
@@ -104,14 +104,19 @@ const { execFileSync } = require('child_process');
   await insert('plc:tank', false); await page.keyboard.press('Escape');
   e = await embeds(); const P = e.find((o) => o.kind === 'plc'); assert.ok(P && P.snapLen > 20000 && P.table.length >= 3); log(`embedded PLC scene "${P.title}": 3D snapshot ${(P.snapLen / 1024).toFixed(0)} kB, table: ${P.table.map((r) => r.label + ' = ' + r.value).join('; ')}`);
   await page.screenshot({ path: OUT + '/doc-plc.png' });
-  await openEmbed(P); await page.waitForFunction(() => window.__oos); await page.waitForTimeout(1500);
-  await page.click('text=🎛 Parameters'); const sl = page.locator('.param:has-text("Tank capacity") input'); await sl.fill('2500'); await page.waitForTimeout(600);
+  const pickTank = async () => { await page.evaluate(() => { const k = window.__kit; k.stage.setMode('build'); k.stage.select([k.doc.elements.find((x) => x.type === 'tank').id]); }); await page.click('.tabs .tab:has-text("Element")'); await page.waitForTimeout(150); return page.locator('.tab-body .field:has-text("Capacity") input'); };
+  await openEmbed(P); await page.waitForFunction(() => window.__kit); await page.waitForTimeout(1500);
+  assert.ok(/Embedded in document/.test(await page.locator('.embed-banner').innerText()));
+  let cap = await pickTank(); assert.equal(await cap.inputValue(), '1000'); await cap.fill('2500'); await cap.dispatchEvent('change'); await page.waitForTimeout(600);
   assert.ok(/unapplied/.test(await page.locator('.embed-banner').innerText()));
   await back('apply'); e = await embeds(); const P2 = e.find((o) => o.kind === 'plc');
-  assert.equal(P2.params.capacity, 2500); assert.notEqual(P2.snapHash, P.snapHash); log('PLC scene: opened from the document, capacity changed to 2500 L, applied → object updated');
+  assert.equal(P2.capacity, 2500); assert.notEqual(P2.snapHash, P.snapHash); log('PLC plant: opened from the document as an editable kit plant, tank capacity changed to 2500 L, applied → object updated');
   // reopen: state is what was applied
-  await openEmbed(P2); await page.waitForFunction(() => window.__oos); await page.waitForTimeout(800); await page.click('text=🎛 Parameters');
-  assert.ok(/2500 L/.test(await page.locator('.param:has-text("Tank capacity")').innerText())); await back(null); log('reopening the scene starts with the applied parameters; leaving unchanged needs no dialog');
+  await openEmbed(P2); await page.waitForFunction(() => window.__kit); await page.waitForTimeout(800);
+  cap = await pickTank(); assert.equal(await cap.inputValue(), '2500'); await back(null); log('reopening the plant starts with the applied state; leaving unchanged needs no dialog');
+  // the template itself is untouched by the embedded copy
+  assert.equal(await page.evaluate(() => new Promise((r) => { const q = indexedDB.open('outofshape-lab'); q.onsuccess = () => { const t = q.result.transaction('scenes').objectStore('scenes').get('tpl_tank'); t.onsuccess = () => r(t.result ? 'changed' : 'untouched'); }; })), 'untouched');
+  log('own copy: the tank template in the lab is untouched');
 
   // ---- 9. PDF export: snapshot as image, table as text
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('text=⬇ Export PDF')]);

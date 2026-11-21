@@ -46,7 +46,7 @@ export async function loadEmbed(docId, page, objId) {
   if (obj.link) {
     // a linked embed follows its original
     const row = await db.get(obj.link.store, obj.link.id);
-    if (row) applied = obj.link.store === 'circuits' ? row : row.state;
+    if (row) applied = obj.link.store === 'circuits' || row.kind === 'scene' ? row : row.state;
   }
   const draft = await db.get('kv', draftKey(docId, objId));
   return { meta, obj, applied, state: draft ? draft.state : JSON.parse(JSON.stringify(applied)), hasDraft: !!draft, ref: { docId, page, objId } };
@@ -66,7 +66,8 @@ export async function draftIds(docId) {
 
 async function writeLink(link, state) {
   if (!link) return;
-  if (link.store === 'circuits') await db.put('circuits', { ...JSON.parse(JSON.stringify(state)), id: link.id, updated: Date.now() });
+  const row0 = link.store === 'circuits' ? null : await db.get(link.store, link.id);
+  if (link.store === 'circuits' || (state.kind === 'scene' && (!row0 || row0.kind === 'scene'))) await db.put(link.store, { ...JSON.parse(JSON.stringify(state)), id: link.id, updated: Date.now() });
   else { const row = (await db.get(link.store, link.id)) || { id: link.id, kind: 'plc-shared' }; await db.put(link.store, { ...row, state: JSON.parse(JSON.stringify(state)), updated: Date.now() }); }
 }
 

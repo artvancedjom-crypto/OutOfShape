@@ -8,7 +8,8 @@ These scripts drive the real app in a headless Chromium (Playwright) and check i
 | `02-editor-extras.cjs` | Alt placement off the grid, right-angle routing, panning, values from a document applied to a template, momentary push buttons, circuits inside the backup ZIP |
 | `03-current-flow.cjs` | Particles (WebGL), log scaling, sensitivity, flow direction, potential and power overlays, overload, burn-out and repair, a 200-part circuit |
 | `04-catalog.cjs` | Catalog browsing, variant form with validation and curve preview, favourites, subcircuit, JSON export/import |
-| `05-document-embeds.cjs` | Embed a circuit in a document, jump in, change a value, apply, return to the same place; undo/redo; draft marker; discard; new version; linked embeds; PLC scene; PDF export |
+| `05-document-embeds.cjs` | Embed a circuit in a document, jump in, change a value, apply, return to the same place; undo/redo; draft marker; discard; new version; linked embeds; PLC plant; PDF export |
+| `06-plant-kit.cjs` | Build a plant in the 3D view (button → motor, light barrier → counter), automatic addresses, program, operate in the scene, watch/trace, forcing, fault injection, I/O map edits, move/rotate/stack/duplicate/delete with undo, cables, group, own element type, JSON export/import, persistence, templates, first person |
 
 Run them:
 
