@@ -4,22 +4,27 @@
 import { db } from '../core/db.js';
 import { loadCircuit, nid } from './model.js';
 import { templateDoc, TEMPLATE_IDS } from './templates.js';
+import { ensureCatalog, registerDocDefs, defsUsedBy } from './catalog.js';
 
 export const isTemplateId = (id) => TEMPLATE_IDS.includes(id);
 export const workingId = (templateId) => 'tpl_' + templateId;
 
 /** Open by route id: a template id ("rc") or a saved circuit id. */
 export async function openCircuit(id) {
+  await ensureCatalog();
   if (isTemplateId(id)) {
     const saved = await db.get('circuits', workingId(id));
+    if (saved) registerDocDefs(saved);
     return { doc: loadCircuit(saved || templateDoc(id)), modified: !!saved };
   }
   const saved = await db.get('circuits', id);
+  if (saved) registerDocDefs(saved);
   return saved ? { doc: loadCircuit(saved), modified: false } : null;
 }
 
 export async function saveCircuit(doc) {
   doc.updated = Date.now();
+  doc.defs = defsUsedBy(doc); // custom parts travel with the circuit
   await db.put('circuits', JSON.parse(JSON.stringify(doc)));
 }
 
@@ -30,6 +35,7 @@ export async function resetTemplate(templateId) {
 
 /** Copy the document under a new id as a user circuit. */
 export async function saveCircuitAs(doc, name) {
+  registerDocDefs(doc);
   const copy = loadCircuit(doc);
   copy.id = nid('c_');
   copy.name = name;

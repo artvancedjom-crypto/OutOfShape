@@ -74,7 +74,7 @@ function solveLinear(A, b) {
 }
 
 // exp with linear continuation, so Newton iterations cannot overflow
-const XMAX = 40;
+const XMAX = 150; // e^150 ≈ 1e65: far above any real operating point, far below overflow
 const limexp = (x) => (x < XMAX ? Math.exp(x) : Math.exp(XMAX) * (1 + x - XMAX));
 const dlimexp = (x) => (x < XMAX ? Math.exp(x) : Math.exp(XMAX));
 

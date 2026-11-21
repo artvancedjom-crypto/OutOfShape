@@ -30,7 +30,7 @@ class UF {
  *   partResult:(part:any,res:any)=>any, pinCurrents:(part:any,res:any)=>number[]|null, hasGround:boolean
  * }}
  */
-export function buildNetlist(doc, { burned = null } = {}) {
+export function buildNetlist(doc, { burned = null, depth = 0 } = {}) {
   const uf = new UF();
   const diagnostics = [];
   const segs = []; // {a,b,wire}
@@ -185,11 +185,34 @@ export function buildNetlist(doc, { burned = null } = {}) {
   // ---- components ------------------------------------------------------------------
   const components = [];
   const alias = new Map(); // contact part id → {relay id, pole index}
+  const subs = new Map(); // subcircuit part id → {comps: [{id, inner: [node names]}], pinIndex}
   if (hasGround) {
     const relays = new Map();
     for (const part of live()) {
       const def = PARTS[part.type];
       if (def.relayContact) continue;
+      if (def.subcircuit) {
+        // expand the inner circuit: inner nodes get the instance name as prefix,
+        // inner nets labelled like an outer pin become that pin's node, ground stays ground
+        const entry = def.subcircuit;
+        const outer = pinNodes.get(part.id);
+        const pinIndex = new Map(entry.pins.map((pn, k) => [pn.name, k]));
+        if (depth > 4) { diagnostics.push({ level: 'error', code: 'sub-depth', message: `${part.name}: subcircuits are nested too deeply.`, parts: [part.id], nodes: [] }); continue; }
+        const inner = buildNetlist({ parts: entry.circuit.parts || [], wires: entry.circuit.wires || [], labels: entry.circuit.labels || [] }, { depth: depth + 1 });
+        const used = new Set();
+        const ren = (nn) => { if (nn === '0') return '0'; if (pinIndex.has(nn)) { used.add(nn); return outer[pinIndex.get(nn)]; } return `${part.id}/${nn}`; };
+        const list = [];
+        for (const c of inner.components) {
+          const id = `${part.id}/${c.id}`;
+          components.push({ ...c, id, nodes: c.nodes.map(ren) });
+          list.push({ id, inner: c.nodes.slice() });
+        }
+        subs.set(part.id, { comps: list, pinIndex });
+        for (const d of inner.diagnostics.filter((x) => x.level === 'error')) diagnostics.push({ level: 'warning', code: 'sub-' + d.code, message: `Inside ${part.name || entry.name}: ${d.message}`, parts: [part.id], nodes: [] });
+        const dead = entry.pins.filter((pn) => !used.has(pn.name)).map((pn) => pn.name);
+        if (dead.length) diagnostics.push({ level: 'warning', code: 'sub-pin', message: `${part.name || entry.name}: pin ${dead.join(', ')} is not connected to anything inside the subcircuit.`, parts: [part.id], nodes: [] });
+        continue;
+      }
       if (burned && burned.has(part.id)) {
         // a burned-out part is an open circuit; keep its nodes in the netlist
         const nd = pinNodes.get(part.id);
@@ -240,6 +263,20 @@ export function buildNetlist(doc, { burned = null } = {}) {
       const v = (res.nodeV[nodes[0]] || 0) - (res.nodeV[nodes[1]] || 0);
       const i = r.poleI[al.pole];
       return { v, i, p: Math.abs(v * i), pinI: [i, -i], on: r.on };
+    }
+    const sub = subs.get(part.id);
+    if (sub) {
+      const nodes = pinNodes.get(part.id);
+      const pinI = nodes.map(() => 0);
+      let p = 0;
+      for (const c of sub.comps) {
+        const cr = res.comp[c.id];
+        if (!cr) continue;
+        p += cr.p || 0;
+        c.inner.forEach((nn, k) => { const idx = sub.pinIndex.get(nn); if (idx !== undefined && cr.pinI[k] !== undefined) pinI[idx] += cr.pinI[k]; });
+      }
+      const v = nodes.length > 1 ? (res.nodeV[nodes[0]] || 0) - (res.nodeV[nodes[1]] || 0) : 0;
+      return { v, i: pinI[0], p, pinI, inside: sub.comps.length };
     }
     const r = res.comp[part.id];
     if (!r) return null;

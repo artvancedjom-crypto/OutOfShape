@@ -26,7 +26,8 @@ export function formatSI(v, unit = '', digits = 3) {
   if (v == null || Number.isNaN(v)) return '—';
   if (!Number.isFinite(v)) return (v < 0 ? '−' : '') + '∞ ' + unit;
   const a = Math.abs(v);
-  if (a < 1e-15) return `0 ${unit}`.trim();
+  if (a === 0) return `0 ${unit}`.trim();
+  if (a < 1e-15) return `${v.toExponential(2)} ${unit}`.trim();
   for (const [m, p] of PREFIXES) {
     if (a >= m * 0.99995) return `${+(v / m).toPrecision(digits)} ${p}${unit}`.trim();
   }
@@ -38,6 +39,7 @@ export function editSI(v) {
   if (v == null || Number.isNaN(v)) return '';
   const a = Math.abs(v);
   if (a === 0) return '0';
+  if (a < 1e-15) return v.toExponential(4);
   for (const [m, p] of PREFIXES) {
     if (a >= m * 0.99995) return `${+(v / m).toPrecision(6)}${p === 'µ' ? 'u' : p}`;
   }

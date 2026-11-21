@@ -263,3 +263,92 @@ test('burned-out part becomes an open circuit and is reported', () => {
   assert.equal(net.partResult(part(doc, 'D1'), r).burned, true);
   assert.ok(resultDiagnostics(doc, net, r).some((d) => d.code === 'burned'));
 });
+
+// ---- phase 3: catalog -----------------------------------------------------------------
+import { registerEntry, fitDiodeIs, characteristic, exportEntries, validateEntry, defsUsedBy, registerDocDefs, subcircuitLayout } from '../src/circuits/catalog.js';
+import { PARTS } from '../src/circuits/parts.js';
+import { loadCircuit } from '../src/circuits/model.js';
+
+test('variant: LED fitted to a datasheet point (3.2 V at 20 mA) carries that current', () => {
+  const n = 2.2;
+  const Is = fitDiodeIs(3.2, 0.02, n);
+  registerEntry({ kind: 'variant', id: 'u_test_led', name: 'Blue LED 3.2V', base: 'LED', params: { Is, n, Irated: 0.02, Imax: 0.03, model: 'blue' } });
+  assert.equal(PARTS.u_test_led.params.find((p) => p.key === 'n').def, n);
+  // 5 V supply, series resistor (5 − 3.2)/0.02 = 90 Ω → the LED must sit at its datasheet point
+  const b = builder('v');
+  b.part('V', 'V1', 0, 4, { rot: 1, params: { V: 5 } }).part('R', 'R1', 5, 0, { params: { R: 90 } }).part('u_test_led', 'D1', 10, 4, { rot: 1 }).gnd(0, 8)
+    .wire('V1.+', 'R1.1', 'vh').wire('R1.2', 'D1.A', 'hv').wire('V1.-', 'GND1.gnd').wire('D1.K', [10, 7], [0, 7]);
+  const { net, r } = solve(b.doc);
+  assert.deepEqual(errors(net), []);
+  near(r.comp.D1.i, 0.02, 0.0002, 'I at the datasheet point'); near(r.comp.D1.v, 3.2, 0.01);
+  // the curve preview passes through the same point
+  const ch = characteristic('LED', { Is, n, Imax: 0.03, Irated: 0.02 });
+  const pt = ch.series[0].pts.reduce((a, c) => (Math.abs(c[0] - 3.2) < Math.abs(a[0] - 3.2) ? c : a));
+  assert.ok(Math.abs(pt[1] - 0.02) / 0.02 < 0.5 && ch.marks.length === 2);
+});
+
+test('variant: transistor with its own hFE; invalid entries are rejected with a reason', () => {
+  registerEntry({ kind: 'variant', id: 'u_bc547c', name: 'BC547C', base: 'NPN', params: { beta: 520, Icmax: 0.1 } });
+  assert.equal(PARTS.u_bc547c.params.find((p) => p.key === 'beta').def, 520);
+  assert.equal(PARTS.u_bc547c.category, 'Semiconductors');
+  assert.throws(() => validateEntry({ kind: 'variant', name: 'x', base: 'NOPE', params: {} }), /unknown model/);
+  assert.throws(() => validateEntry({ kind: 'variant', name: 'x', base: 'R', params: { R: -5 } }), /below the minimum/);
+  assert.throws(() => validateEntry({ kind: 'variant', name: 'x', base: 'R', params: { Q: 5 } }), /no parameter/);
+  assert.throws(() => validateEntry({ kind: 'variant', name: '', base: 'R', params: {} }), /no name/);
+  const ch = characteristic('NPN', { beta: 520, Is: 1e-14, Icmax: 0.1 });
+  assert.equal(ch.series.length, 4); assert.ok(ch.series[3].pts.at(-1)[1] > ch.series[0].pts.at(-1)[1]);
+  for (const t of ['NMOS', 'R', 'LAMP', 'RELAY', 'MOTOR', 'FUSE', 'C']) assert.ok(characteristic(t, Object.fromEntries(PARTS[t].params.map((p) => [p.key, p.def]))).series[0].pts.length > 2, t);
+});
+
+test('subcircuit: a divider saved as one part behaves like the flat circuit', () => {
+  // inner: IN —R 1k— OUT —R 3k— ground
+  const inner = builder('inner');
+  inner.part('R', 'Ra', 4, 0, { params: { R: 1000 } }).part('R', 'Rb', 8, 3, { rot: 1, params: { R: 3000 } }).gnd(8, 7)
+    .wire([0, 0], 'Ra.1').wire('Ra.2', [8, 0], 'Rb.1').wire([8, 0], [12, 0]).wire('Rb.2', 'GND1.gnd')
+    .label([0, 0], 'IN').label([12, 0], 'OUT');
+  const entry = registerEntry({ kind: 'subcircuit', id: 'u_div', name: 'Divider 1:4', category: 'Passive', prefix: 'X',
+    pins: [{ name: 'IN', side: 'left' }, { name: 'OUT', side: 'right' }], circuit: { parts: inner.doc.parts, wires: inner.doc.wires, labels: inner.doc.labels } });
+  const lay = subcircuitLayout(entry);
+  assert.deepEqual(lay.pins.map((p) => [p.x, p.y]), [[-3, 0], [3, 0]]);
+  const b = builder('outer');
+  b.part('V', 'V1', 0, 4, { rot: 1, params: { V: 8 } }).part('u_div', 'X1', 8, 0).part('R', 'RL', 14, 4, { rot: 1, params: { R: 3000 } }).gnd(0, 9)
+    .wire('V1.+', [0, 0], 'X1.IN').wire('X1.OUT', [14, 0], 'RL.1').wire('V1.-', 'GND1.gnd').wire('RL.2', [14, 8], [0, 8]);
+  const { net, r } = solve(b.doc);
+  assert.deepEqual(net.diagnostics, []);
+  // hand: 3k ∥ 3k = 1.5k → OUT = 8 · 1.5/2.5 = 4.8 V; I(in) = 8/2.5k = 3.2 mA; I(load) = 1.6 mA
+  near(r.nodeV[net.nodeAt(14, 0)], 4.8, 1e-6);
+  const x = net.partResult(part(b.doc, 'X1'), r);
+  near(x.pinI[0], 0.0032, 1e-9, 'current into IN'); near(x.pinI[1], -0.0016, 1e-9, 'current out of OUT');
+  near(x.p, 0.0032 * 3.2 + 4.8 * 4.8 / 3000, 1e-9, 'power inside');
+  // two instances do not share inner nodes
+  const b2 = builder('two');
+  b2.part('V', 'V1', 0, 4, { rot: 1, params: { V: 8 } }).part('u_div', 'X1', 8, 0).part('u_div', 'X2', 16, 0).gnd(0, 9)
+    .wire('V1.+', [0, 0], 'X1.IN').wire('X1.OUT', 'X2.IN').wire('V1.-', 'GND1.gnd');
+  const s2 = solve(b2.doc);
+  // second divider (4k to ground) loads the first: 3k ∥ 4k = 1714.3 → 8·1714.3/2714.3 = 5.053 V, then ×3/4
+  near(s2.r.nodeV[s2.net.nodeAt(11, 0)], 8 * (12000 / 7) / (1000 + 12000 / 7), 1e-6);
+  near(s2.r.nodeV[s2.net.nodeAt(19, 0)], 0.75 * 8 * (12000 / 7) / (1000 + 12000 / 7), 1e-6);
+});
+
+test('custom parts travel with the circuit and with catalog exports', () => {
+  const b = builder('carry');
+  b.part('u_div', 'X1', 8, 0).part('u_bc547c', 'Q1', 20, 0);
+  const defs = defsUsedBy(b.doc);
+  assert.deepEqual(Object.keys(defs).sort(), ['u_bc547c', 'u_div']);
+  const saved = JSON.parse(JSON.stringify({ ...b.doc, defs }));
+  delete PARTS.u_div; delete PARTS.u_bc547c;
+  assert.equal(loadCircuit(saved).parts.length, 0, 'unknown types are dropped without their definitions');
+  registerDocDefs(saved);
+  assert.equal(loadCircuit(saved).parts.length, 2, 'definitions embedded in the file restore them');
+  const file = JSON.parse(exportEntries([PARTS.u_div.entry]));
+  assert.equal(file.file, 'outofshape-catalog'); assert.equal(file.entries[0].name, 'Divider 1:4');
+});
+
+test('blue and white LEDs reach their forward voltage (≈3 V at 20 mA)', () => {
+  for (const model of ['blue', 'white', 'green', 'red']) {
+    const r = new Circuit([{ id: 'I1', type: 'I', nodes: ['0', 'a'], I: 0.02 }, { id: 'D1', type: 'LED', nodes: ['a', '0'], model }]).step();
+    assert.ok(r.ok);
+    const expected = { blue: 3.1, white: 3.1, green: 2.2, red: 1.85 }[model];
+    near(r.comp.D1.v, expected, 0.2, model);
+  }
+});

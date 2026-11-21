@@ -4,13 +4,14 @@ import { h, clear, toast, modal, prompt } from '../core/dom.js';
 import { navigate } from '../core/router.js';
 import { CircuitEditor, probeColor } from '../circuits/editor.js';
 import { Simulation, SPEEDS } from '../circuits/sim.js';
-import { PARTS, CATEGORY_ORDER } from '../circuits/parts.js';
+import { PARTS } from '../circuits/parts.js';
 import { newCircuit } from '../circuits/model.js';
 import { openCircuit, saveCircuit, saveCircuitAs, resetTemplate, isTemplateId, deleteCircuit } from '../circuits/store.js';
 import { getCircuit as libraryEntry } from '../circuits/library.js';
 import { parseSI, editSI, formatSI } from '../circuits/units.js';
 import { getDoc } from '../docs/store.js';
 import { parseLaunch } from './launch.js';
+import { renderPalette, openCatalogManager, subcircuitDialog } from './catalog-ui.js';
 import { buildFlowGraph, solveFlow } from '../circuits/flow.js';
 import { FlowRenderer, FLOW_DEFAULTS } from '../circuits/particles.js';
 
@@ -190,28 +191,10 @@ export async function circuitView(root, id, q = {}) {
 
   // ---- palette --------------------------------------------------------------------
   function drawPalette() {
-    clear(palette);
-    const search = h('input', { class: 'input slim', placeholder: 'Search parts…' });
-    search.addEventListener('keydown', (e) => e.stopPropagation());
-    const list = h('div', { class: 'ce-pal-list' });
-    const fill = () => {
-      clear(list);
-      const term = search.value.trim().toLowerCase();
-      for (const cat of CATEGORY_ORDER) {
-        const items = Object.entries(PARTS).filter(([, d]) => d.category === cat && (!term || d.name.toLowerCase().includes(term)));
-        if (!items.length) continue;
-        list.append(h('div', { class: 'menu-h' }, cat));
-        for (const [type, d] of items) {
-          const b = h('button', { class: 'ce-pal-item', title: `Place ${d.name}`, onclick: () => editor.setTool('place', type) },
-            h('span', { class: 'ce-pal-sym', html: `<svg viewBox="-46 -34 92 68"><g class="ce-part">${d.symbol(Object.fromEntries(d.params.map((p) => [p.key, p.def])), null)}</g></svg>` }),
-            h('span', {}, d.name));
-          list.append(b);
-        }
-      }
-    };
-    search.addEventListener('input', fill);
-    palette.append(search, list);
-    fill();
+    renderPalette(palette, {
+      onPick: (type) => editor.setTool('place', type),
+      onManage: () => openCatalogManager({ onChange: drawPalette }),
+    });
   }
 
   // ---- side panel -------------------------------------------------------------------
@@ -443,6 +426,11 @@ export async function circuitView(root, id, q = {}) {
         navigate('/lab?tab=circuits');
       });
     }
+    item('🧩 Save as catalog part (subcircuit)…', async () => {
+      const e = await subcircuitDialog(doc);
+      if (e) { drawPalette(); toast(`“${e.name}” is now in the catalog. Place it from the part list on the left.`, 'ok', 4500); }
+    });
+    item('📚 Component catalog…', () => openCatalogManager({ onChange: drawPalette }));
     item('⬇ Export circuit (.json)', async () => {
       const { platform } = await import('../platform/index.js');
       platform.saveFile(`${doc.name}.circuit.json`, JSON.stringify(doc, null, 2), { mime: 'application/json', filters: [{ name: 'Circuit', extensions: ['json'] }] });
