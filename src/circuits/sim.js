@@ -10,6 +10,8 @@ export const SPEEDS = [
   ['0.001', '1 ms per second'], ['0.0001', '100 µs per second'], ['10', '10× faster'],
 ];
 
+const BURNABLE = new Set(['R', 'LED', 'D', 'LAMP', 'NPN', 'PNP', 'NMOS', 'PMOS', 'C', 'POT']);
+
 export class Simulation {
   constructor() {
     this.doc = null;
@@ -22,13 +24,17 @@ export class Simulation {
     this.samples = []; // scope buffer: {t, v: {probeId: value}}
     this.window = 0;
     this.load = 0; // fraction of the requested simulated time that was achieved
+    this.burned = new Set(); // parts destroyed by overload (open circuit until replaced)
+    this.burnOut = true; // setting: do badly overloaded parts burn out?
+    this.stress = new Map(); // part id → seconds spent at ≥ 2× rating
   }
 
   /** Call after every document change. */
   rebuild(doc) {
     const prev = this.circuit;
     this.doc = doc;
-    this.net = buildNetlist(doc);
+    for (const id of [...this.burned]) if (!doc.parts.some((p) => p.id === id)) this.burned.delete(id);
+    this.net = buildNetlist(doc, { burned: this.burned });
     this.circuit = new Circuit(this.net.components);
     if (prev) this.circuit.adoptState(prev);
     this.char = this._characteristicTime();
@@ -39,6 +45,8 @@ export class Simulation {
   /** Forget all dynamic state (capacitor charge, blown fuses, motor speed) and restart at t = 0. */
   restart() {
     if (!this.doc) return;
+    this.burned.clear();
+    this.stress.clear();
     this.net = buildNetlist(this.doc);
     this.circuit = new Circuit(this.net.components);
     this.samples = [];
@@ -46,7 +54,11 @@ export class Simulation {
   }
 
   resetPartState(id) {
-    if (this.circuit) { delete this.circuit.state[id]; this.solveNow(); }
+    if (!this.circuit) return;
+    delete this.circuit.state[id];
+    this.stress.delete(id);
+    if (this.burned.delete(id)) this.rebuild(this.doc);
+    else this.solveNow();
   }
 
   /** Jump to the DC operating point (capacitors charged, inductors settled). */
@@ -97,8 +109,26 @@ export class Simulation {
     return this.circuit && this.circuit.dynamic ? (5 * this.char) / 4 : 1;
   }
 
+  /** Parts that run at twice their rating for about a second burn out (if enabled). */
+  _burnCheck(dtReal) {
+    if (!this.burnOut || !this.result || !this.result.ok) return false;
+    let any = false;
+    for (const part of this.doc.parts) {
+      if (!BURNABLE.has(part.type) || this.burned.has(part.id)) continue;
+      const r = this.net.partResult(part, this.result);
+      if (r && r.overload >= 2) {
+        const t = (this.stress.get(part.id) || 0) + dtReal * Math.min(4, r.overload / 2);
+        this.stress.set(part.id, t);
+        if (t > 1.2) { this.burned.add(part.id); any = true; }
+      } else if (this.stress.has(part.id)) this.stress.delete(part.id);
+    }
+    if (any) this.rebuild(this.doc);
+    return any;
+  }
+
   /** Advance by one animation frame. Returns true if results changed. */
   tick(dtReal) {
+    this._burnCheck(dtReal);
     const c = this.circuit;
     if (!c || !c.components.length || !this.running) return false;
     const span = Math.min(dtReal, 0.05) * this.rate();

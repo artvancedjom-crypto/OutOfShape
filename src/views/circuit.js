@@ -11,6 +11,13 @@ import { getCircuit as libraryEntry } from '../circuits/library.js';
 import { parseSI, editSI, formatSI } from '../circuits/units.js';
 import { getDoc } from '../docs/store.js';
 import { parseLaunch } from './launch.js';
+import { buildFlowGraph, solveFlow } from '../circuits/flow.js';
+import { FlowRenderer, FLOW_DEFAULTS } from '../circuits/particles.js';
+
+const FLOW_KEY = 'oos-flow';
+function loadFlowSettings() {
+  try { return { ...FLOW_DEFAULTS, ...JSON.parse(localStorage.getItem(FLOW_KEY) || '{}') }; } catch { return { ...FLOW_DEFAULTS }; }
+}
 
 /** Build an editing form for a part. Returns {el, valid(), apply()}. */
 function partForm(doc, part, { live } = {}) {
@@ -124,7 +131,8 @@ export async function circuitView(root, id, q = {}) {
 
   // ---- layout -------------------------------------------------------------------
   const canvasHost = h('div', { class: 'ce-canvas' });
-  const statusEl = h('div', { class: 'ce-status' });
+  const statusText = h('span');
+  const statusEl = h('div', { class: 'ce-status' }, statusText);
   const palette = h('div', { class: 'ce-palette' });
   const side = h('div', { class: 'ce-side' });
   const scopeCanvas = h('canvas', { class: 'scope', width: 1200, height: 220 });
@@ -145,6 +153,10 @@ export async function circuitView(root, id, q = {}) {
   const speedSel = h('select', { class: 'input slim', title: 'Simulated time per real second' }, SPEEDS.map(([v, l]) => h('option', { value: v }, l)));
   speedSel.addEventListener('change', () => { sim.speed = speedSel.value; sim.samples = []; });
   const fileBtn = h('button', { class: 'btn small' }, 'File ▾');
+  const flowBtn = h('button', { class: 'btn small', title: 'Current flow animation and overlays' }, '⚡ Flow ▾');
+  const legend = h('span', { class: 'ce-legend' });
+  const flow = loadFlowSettings();
+  const saveFlow = () => { try { localStorage.setItem(FLOW_KEY, JSON.stringify(flow)); } catch { /* ignore */ } };
   const badge = h('span', { class: 'badge' });
 
   const toolbar = h('div', { class: 'toolbar editor-tb' },
@@ -165,7 +177,7 @@ export async function circuitView(root, id, q = {}) {
     h('button', { class: 'icon-btn', title: 'Delete (Del)', onclick: () => editor.deleteSel() }, '🗑'),
     undoBtn, redoBtn, autoBtn,
     h('div', { class: 'spacer' }),
-    runBtn, speedSel,
+    flowBtn, runBtn, speedSel,
     h('button', { class: 'btn small', title: 'Jump to the steady state (capacitors charged)', onclick: () => { sim.settle(); toast('Jumped to the DC operating point'); } }, 'Settle'),
     h('button', { class: 'btn small', title: 'Discharge capacitors, replace fuses, restart time', onclick: () => { sim.restart(); editor.renderAll(); } }, '⟲ Restart'),
     h('button', { class: 'icon-btn', title: 'Zoom out (−)', onclick: () => editor.zoomAt(1 / 1.2) }, '−'),
@@ -219,6 +231,7 @@ export async function circuitView(root, id, q = {}) {
       const form = partForm(doc, part, { live: () => { if (form.valid()) { form.apply(); keepInspector = true; editor.commit('value'); keepInspector = false; } } });
       inspector.append(form.el);
       for (const a of def.actions || []) inspector.append(h('button', { class: 'btn small', onclick: () => { a.run(sim, part); editor.renderAll(); } }, a.label));
+      if (sim.burned.has(part.id)) inspector.append(h('button', { class: 'btn small primary', onclick: () => { sim.resetPartState(part.id); editor.renderAll(); drawInspector(); } }, 'Replace burned part'));
       return;
     }
     if (sel.length === 1 && sel[0].kind === 'label') {
@@ -345,10 +358,55 @@ export async function circuitView(root, id, q = {}) {
       if (!keepInspector) drawInspector();
       for (const [pid, r] of measureRows) r.val.parentElement.classList.toggle('sel', editor.sel.has(pid));
     },
-    onStatus: (t) => { statusEl.textContent = t; },
+    onStatus: (t) => { statusText.textContent = t; },
     onEditPart: editPartDialog,
   });
   if (applied.length) saveCircuit(doc);
+
+  // ---- current flow animation --------------------------------------------------------------
+  const particles = new FlowRenderer(canvasHost);
+  let flowGraph = null;
+  let flowNet = null;
+  const applyFlow = () => {
+    editor.overlay.potential = flow.potential;
+    editor.overlay.power = flow.power;
+    sim.burnOut = flow.burnOut !== false;
+    flowBtn.classList.toggle('active', flow.on);
+    saveFlow();
+  };
+  applyFlow();
+  flowBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.menu.flow-menu').forEach((m) => m.remove());
+    const menu = h('div', { class: 'menu flow-menu' });
+    const check = (key, label, hint) => {
+      const inp = h('input', { type: 'checkbox', checked: key === 'burnOut' ? flow.burnOut !== false : !!flow[key] });
+      inp.addEventListener('change', () => { flow[key] = inp.checked; applyFlow(); });
+      return h('label', { class: 'inline' }, inp, h('span', {}, label, hint ? h('div', { class: 'small muted' }, hint) : null));
+    };
+    const dirSel = h('select', { class: 'input slim' }, h('option', { value: '0', selected: !flow.electron }, 'Conventional current (+ → −)'), h('option', { value: '1', selected: !!flow.electron }, 'Electron flow (− → +)'));
+    dirSel.addEventListener('change', () => { flow.electron = dirSel.value === '1'; applyFlow(); });
+    const sensLbl = h('span', { class: 'small muted' });
+    const sens = h('input', { type: 'range', min: 2, max: 9, step: 0.5, value: flow.sensitivity });
+    const showSens = () => { sensLbl.textContent = ` visible from ${formatSI(10 ** -flow.sensitivity, 'A')}`; };
+    sens.addEventListener('input', () => { flow.sensitivity = +sens.value; showSens(); applyFlow(); });
+    showSens();
+    const spd = h('input', { type: 'range', min: 0.2, max: 3, step: 0.1, value: flow.speed });
+    spd.addEventListener('input', () => { flow.speed = +spd.value; applyFlow(); });
+    menu.append(
+      check('on', 'Show moving charges', 'Density and speed grow with the logarithm of the current, so µA and A are both visible.'),
+      h('label', {}, 'Direction', dirSel),
+      h('label', {}, h('span', {}, 'Sensitivity', sensLbl), sens),
+      h('label', {}, 'Animation speed', spd),
+      check('potential', 'Colour wires by voltage', 'Blue = lowest, red = highest potential.'),
+      check('power', 'Heat glow by power', 'Parts glow from 1 mW (faint) to 10 W (red).'),
+      check('burnOut', 'Overloaded parts burn out', 'A part at twice its rating for about a second is destroyed until you replace it.'));
+    const r = flowBtn.getBoundingClientRect();
+    Object.assign(menu.style, { top: r.bottom + 4 + 'px', left: Math.max(8, r.left - 80) + 'px' });
+    document.body.append(menu);
+    const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', close); } };
+    setTimeout(() => document.addEventListener('pointerdown', close), 0);
+  });
 
   // ---- file menu ------------------------------------------------------------------------------
   fileBtn.addEventListener('click', (e) => {
@@ -482,13 +540,20 @@ export async function circuitView(root, id, q = {}) {
   let last = performance.now();
   let uiT = 0;
   let lastErrSig = '';
+  const stats = { ms: 0, frames: 0 }; // smoothed work time per frame (simulation + drawing)
   function frame(now) {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    const now0 = performance.now();
     sim.updateWindow();
     sim.tick(dt);
     editor.refreshLive();
+    if (flowNet !== sim.net) { flowNet = sim.net; flowGraph = buildFlowGraph(doc); }
+    if (flow.on) solveFlow(flowGraph, sim.net, sim.result);
+    particles.draw(flowGraph.items, editor, sim.running ? dt : 0, flow);
+    stats.ms += (performance.now() - now0 - stats.ms) * 0.05;
+    stats.frames++;
     uiT += dt;
     if (uiT > 0.12) {
       uiT = 0;
@@ -496,21 +561,28 @@ export async function circuitView(root, id, q = {}) {
         const v = sim.probeValue(p);
         val.textContent = v == null ? '—' : formatSI(v, { V: 'V', A: 'A', R: 'Ω' }[p.kind]);
       }
+      if (flow.potential && editor.potentialRange) {
+        const [lo, hi] = editor.potentialRange;
+        const txt = `${formatSI(lo, 'V')}|${formatSI(hi, 'V')}`;
+        if (legend.dataset.t !== txt) { legend.dataset.t = txt; clear(legend); legend.append(txt.split('|')[0], h('i'), txt.split('|')[1]); }
+      } else if (legend.dataset.t) { legend.dataset.t = ''; clear(legend); }
       const sig = sigOf(sim.diagnostics);
       if (sig !== lastErrSig) { lastErrSig = sig; drawProblems(); editor.renderAll(); }
     }
     drawScope();
   }
   raf = requestAnimationFrame(frame);
-  window.__ce = { editor, sim, get doc() { return doc; } }; // handy for debugging from the console
+  statusEl.append(legend);
+  window.__ce = { editor, sim, particles, flow, stats, get flowGraph() { return flowGraph; }, get doc() { return doc; } }; // handy for debugging from the console
 
   return {
     destroy() {
       cancelAnimationFrame(raf);
       clearTimeout(saveT);
       if (modified) saveCircuit(doc);
+      particles.destroy();
       editor.destroy();
-      document.querySelectorAll('.menu.ce-file').forEach((m) => m.remove());
+      document.querySelectorAll('.menu.ce-file, .menu.flow-menu').forEach((m) => m.remove());
     },
   };
 }

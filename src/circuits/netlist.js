@@ -30,7 +30,7 @@ class UF {
  *   partResult:(part:any,res:any)=>any, pinCurrents:(part:any,res:any)=>number[]|null, hasGround:boolean
  * }}
  */
-export function buildNetlist(doc) {
+export function buildNetlist(doc, { burned = null } = {}) {
   const uf = new UF();
   const diagnostics = [];
   const segs = []; // {a,b,wire}
@@ -190,6 +190,12 @@ export function buildNetlist(doc) {
     for (const part of live()) {
       const def = PARTS[part.type];
       if (def.relayContact) continue;
+      if (burned && burned.has(part.id)) {
+        // a burned-out part is an open circuit; keep its nodes in the netlist
+        const nd = pinNodes.get(part.id);
+        for (let k = 1; k < nd.length; k++) components.push({ id: k === 1 ? part.id : `${part.id}#o${k}`, type: 'R', nodes: [nd[0], nd[k]], R: 1e9 });
+        continue;
+      }
       const comps = def.model(part, pinNodes.get(part.id));
       components.push(...comps);
       if (part.type === 'RELAY') relays.set(part.name, comps[0]);
@@ -237,6 +243,7 @@ export function buildNetlist(doc) {
     }
     const r = res.comp[part.id];
     if (!r) return null;
+    if (burned && burned.has(part.id)) return { v: r.v, i: 0, p: 0, pinI: PARTS[part.type].pins.map(() => 0), burned: true };
     const def = PARTS[part.type];
     if (def.pinCurrents) {
       const pinI = def.pinCurrents(res, part);
@@ -266,6 +273,8 @@ export function resultDiagnostics(doc, net, res) {
     const name = part.name || PARTS[part.type].name;
     if (part.type === 'V' && Math.abs(r.i) > 50) {
       out.push({ level: 'error', code: 'short', message: `Short circuit: ${name} delivers ${Math.abs(r.i).toFixed(0)} A. Its terminals are joined through closed switches or wires without a load.`, parts: [part.id], nodes: [] });
+    } else if (r.burned) {
+      out.push({ level: 'error', code: 'burned', message: `${name} has burned out because it was run far beyond its rating. Fix the cause, then select it and choose "Replace burned part" (or press Restart).`, parts: [part.id], nodes: [] });
     } else if (r.blown) {
       out.push({ level: 'warning', code: 'blown', message: `${name} has blown. Fix the cause, then replace it (select it → "Replace blown fuse").`, parts: [part.id], nodes: [] });
     } else if (r.overload) {

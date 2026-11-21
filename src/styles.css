@@ -488,3 +488,19 @@ tr.forced .force { background: var(--warn); color: #fff; border-color: var(--war
 .ce-meas i { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .ce-meas b { font-family: var(--mono); }
 .btn.active { border-color: var(--accent); color: var(--accent); }
+
+/* flow animation + overlays */
+.ce-flow { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+.ce-host .ce-tip { z-index: 4; }
+.ce-heat { filter: blur(7px); pointer-events: none; }
+.ce-part.overload { color: var(--err); animation: ce-flash 0.45s steps(2) infinite; }
+@keyframes ce-flash { 50% { color: #ffb21a; } }
+.ce-part.burned { color: #5b4a3f; animation: none; opacity: 0.85; }
+.ce-part .burn-x { stroke: var(--err); stroke-width: 3; }
+.ce-part .burn-mark { fill: rgba(40, 24, 12, 0.35); stroke: none; filter: blur(3px); }
+.ce-legend { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font: 11px var(--mono); }
+.ce-legend i { display: inline-block; width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgb(43,108,255), rgb(138,148,166), rgb(255,59,48)); }
+.flow-menu { width: 300px; padding: 12px; display: grid; gap: 10px; }
+.flow-menu label { display: grid; gap: 3px; font-size: 12px; font-weight: 600; }
+.flow-menu label.inline { grid-template-columns: auto 1fr; align-items: center; gap: 8px; font-weight: 500; }
+.flow-menu .small { font-weight: 400; }

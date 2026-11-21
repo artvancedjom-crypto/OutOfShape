@@ -17,6 +17,15 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&
 const PROBE_COLORS = ['#ff9f1c', '#2ec4b6', '#e71d36', '#9b5de5', '#00bbf9', '#f15bb5', '#8ac926', '#ffca3a'];
 export const probeColor = (doc, p) => PROBE_COLORS[Math.max(0, doc.probes.indexOf(p)) % PROBE_COLORS.length];
 
+/** Blue (lowest) → grey → red (highest voltage). */
+export function potentialColor(v, lo, hi) {
+  if (hi - lo < 1e-9) return '#8a94a6';
+  const t = (v - lo) / (hi - lo);
+  const mix = (a, b, k) => Math.round(a + (b - a) * k);
+  const [c1, c2, k] = t < 0.5 ? [[43, 108, 255], [138, 148, 166], t * 2] : [[138, 148, 166], [255, 59, 48], (t - 0.5) * 2];
+  return `rgb(${mix(c1[0], c2[0], k)},${mix(c1[1], c2[1], k)},${mix(c1[2], c2[2], k)})`;
+}
+
 let clipboard = null; // shared between editor instances in this window
 
 export class CircuitEditor {
@@ -34,12 +43,13 @@ export class CircuitEditor {
     this.visualKeys = new Map();
     this.undoStack = [];
     this.redoStack = [];
+    this.overlay = { potential: false, power: false };
 
     host.classList.add('ce-host');
     this.svg = svgEl('svg', { class: 'ce-svg', tabindex: 0 }, host);
     this.world = svgEl('g', {}, this.svg);
     this.layers = {};
-    for (const name of ['halo', 'wires', 'junctions', 'parts', 'labels', 'probes', 'overlay']) this.layers[name] = svgEl('g', { class: 'ce-' + name }, this.world);
+    for (const name of ['heat', 'halo', 'wires', 'junctions', 'parts', 'labels', 'probes', 'overlay']) this.layers[name] = svgEl('g', { class: 'ce-' + name }, this.world);
     this.tip = document.createElement('div');
     this.tip.className = 'ce-tip';
     host.append(this.tip);
@@ -264,6 +274,9 @@ export class CircuitEditor {
       if (this.sel.has(w.id)) for (const p of w.pts) s += `<rect class="ce-handle" x="${p[0] * U - 4}" y="${p[1] * U - 4}" width="8" height="8"/>`;
     }
     L.wires.innerHTML = s;
+    this.wireEls = [...L.wires.querySelectorAll('polyline')].map((el) => ({ el, w: d.wires.find((x) => x.id === el.dataset.id), col: '' }));
+    L.heat.innerHTML = '';
+    this.heatEls = new Map();
     s = '';
     for (const j of sim.net ? sim.net.junctions : []) s += `<circle class="ce-junction" cx="${j[0] * U}" cy="${j[1] * U}" r="4"/>`;
     L.junctions.innerHTML = s;
@@ -314,7 +327,8 @@ export class CircuitEditor {
 
   _drawSymbol(part, body, live) {
     const def = PARTS[part.type];
-    body.innerHTML = def.symbol(part.params, live || null);
+    body.innerHTML = def.symbol(part.params, live || null)
+      + (live && live.burned ? '<path d="M-9,-9 L9,9 M-9,9 L9,-9" class="burn-x"/><circle cx="0" cy="0" r="15" class="burn-mark"/>' : '');
     // keep symbol texts upright and readable
     const rot = (part.rot || 0) * 90;
     for (const t of body.querySelectorAll('text')) {
@@ -379,11 +393,39 @@ export class CircuitEditor {
   /** Per-frame update: redraw only symbols whose visual state changed, refresh probe texts. */
   refreshLive(force = false) {
     const sim = this.sim;
+    const res = sim.result && sim.result.ok ? sim.result : null;
+    // overload flash, burned look and optional heat tint
+    for (const { g, part } of this.partEls.values()) {
+      const r = res ? sim.partResult(part) : null;
+      const over = !!(r && (r.overload > 1 || r.blown));
+      if (g._over !== over) { g._over = over; g.classList.toggle('overload', over); }
+      const burned = !!(r && r.burned);
+      if (g._burned !== burned) { g._burned = burned; g.classList.toggle('burned', burned); }
+      let heat = 0;
+      if (this.overlay.power && r && r.p > 1e-4) heat = Math.min(8, Math.round(Math.max(0, (Math.log10(r.p) + 3.2) / 4.2) * 8)); // 1 mW … 10 W
+      let he = this.heatEls.get(part.id);
+      if (heat && !he) { he = svgEl('circle', { class: 'ce-heat', cx: part.x * U, cy: part.y * U }, this.layers.heat); he._h = 0; this.heatEls.set(part.id, he); }
+      if (he && he._h !== heat) { he._h = heat; he.setAttribute('r', 14 + heat * 5); he.setAttribute('opacity', heat ? 0.18 + heat * 0.07 : 0); he.setAttribute('fill', heat > 5 ? '#ff2d1a' : heat > 3 ? '#ff7a1a' : '#ffb21a'); }
+    }
+    // wire colour by potential
+    if (this.overlay.potential && res) {
+      let lo = 0; let hi = 0;
+      for (const k in res.nodeV) { const v = res.nodeV[k]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      this.potentialRange = [lo, hi];
+      for (const we of this.wireEls || []) {
+        const node = sim.net.nodeAt(we.w.pts[0][0], we.w.pts[0][1]);
+        const v = node == null ? null : res.nodeV[node];
+        const col = v == null || v === undefined ? '' : potentialColor(v, lo, hi);
+        if (we.col !== col) { we.col = col; we.el.style.stroke = col; }
+      }
+    } else if (this.wireEls) {
+      for (const we of this.wireEls) if (we.col) { we.col = ''; we.el.style.stroke = ''; }
+    }
     for (const { body, part } of this.partEls.values()) {
       const def = PARTS[part.type];
-      if (!def.visual) continue;
+      if (!def.visual && !this.sim.burned.has(part.id) && this.visualKeys.get(part.id) !== 'burned') continue;
       const r = sim.partResult(part);
-      const key = r ? def.visual(r) : '-';
+      const key = r ? (r.burned ? 'burned' : def.visual ? def.visual(r) : '') : '-';
       if (force || this.visualKeys.get(part.id) !== key) {
         this.visualKeys.set(part.id, key);
         this._drawSymbol(part, body, r);
@@ -994,7 +1036,8 @@ export class CircuitEditor {
         if (r.region) html += `<div>${r.region}${r.ib !== undefined ? ` · I<sub>B</sub> = ${formatSI(r.ib, 'A')} · V<sub>CE</sub> = ${formatSI(r.vce, 'V')}` : ''}${r.vgs !== undefined ? ` · V<sub>GS</sub> = ${formatSI(r.vgs, 'V')}` : ''}</div>`;
         if (r.rpm !== undefined) html += `<div>${Math.round(r.rpm)} rpm</div>`;
         if (r.on !== undefined) html += `<div>${r.on ? 'energised' : 'released'}</div>`;
-        if (r.blown) html += '<div class="warn">blown</div>';
+        if (r.burned) html += '<div class="warn">burned out</div>';
+        else if (r.blown) html += '<div class="warn">blown</div>';
         else if (r.overload) html += `<div class="warn">overloaded ×${r.overload.toFixed(1)}</div>`;
       } else if (part.type !== 'GND') html += `<div class="warn">${sim.net && sim.net.excluded.has(part.id) ? 'not simulated (see problems)' : 'no result'}</div>`;
       if (def.interactive) html += '<div class="hint">click to operate</div>';

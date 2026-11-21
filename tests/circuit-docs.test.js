@@ -219,3 +219,47 @@ test('DC motor spins up to (V − I·R)/Ke', () => {
   const m = c.result.comp.M1;
   near(m.w, (6 - m.i * 4) / 0.03, 1); assert.ok(m.i < 0.3 && m.rpm > 1500);
 });
+
+// ---- phase 2: wire currents ---------------------------------------------------------
+import { buildFlowGraph, solveFlow } from '../src/circuits/flow.js';
+
+test('wire currents obey KCL: divider with the load switched in', () => {
+  const doc = templateDoc('divider');
+  part(doc, 'S1').params.closed = true;
+  const { net, r } = solve(doc);
+  const g = solveFlow(buildFlowGraph(doc), net, r);
+  const at = (x, y) => g.edges.filter((e) => Math.abs((e.a.x + e.b.x) / 2 - x) < 0.6 && Math.abs((e.a.y + e.b.y) / 2 - y) < 0.6);
+  const i1 = r.comp.R1.i; const i2 = r.comp.R2.i; const i3 = r.comp.R3.i;
+  // top rail between R1 and the tap carries all of I(R1); beyond the tap only I(R3)
+  near(Math.abs(at(14, 4)[0].i), i1, 1e-9, 'before the tap');
+  near(Math.abs(at(17.5, 4)[0].i), i3, 1e-9, 'after the tap');
+  near(Math.abs(at(16, 5.5)[0].i), i2, 1e-9, 'down to R2');
+  // bottom rail: return current adds up again toward the source
+  near(Math.abs(at(10, 13)[0].i), i1, 1e-9, 'return to the source');
+  near(Math.abs(at(20.5, 13)[0].i), i3, 1e-9, 'return from R3');
+  // every part path equals the part current
+  for (const pp of g.partPaths.filter((x) => x.part.name === 'R2')) near(pp.i, i2, 1e-12);
+  // direction: current leaves V1+ (4,7) upward, i.e. from the pin toward the top rail
+  const up = g.edges.find((e) => Math.abs(e.a.x - 4) < 0.01 && Math.abs(e.b.x - 4) < 0.01 && Math.min(e.a.y, e.b.y) < 7 && Math.max(e.a.y, e.b.y) <= 7.01);
+  const towardTop = up.a.y > up.b.y ? up.i : -up.i;
+  near(towardTop, i1, 1e-9, 'conventional current flows out of the + terminal');
+});
+
+test('no current, no flow: open switch leaves every edge at zero', () => {
+  const doc = templateDoc('led');
+  part(doc, 'S1').params.closed = false;
+  const { net, r } = solve(doc);
+  const g = solveFlow(buildFlowGraph(doc), net, r);
+  assert.ok(g.edges.every((e) => Math.abs(e.i) < 1e-7));
+  assert.ok(g.partPaths.every((p) => Math.abs(p.i) < 1e-7));
+});
+
+test('burned-out part becomes an open circuit and is reported', () => {
+  const doc = templateDoc('led');
+  part(doc, 'R1').params.R = 10; // ~700 mA through a 30 mA LED
+  const net = buildNetlist(doc, { burned: new Set(['D1']) });
+  const r = new Circuit(net.components).step();
+  assert.ok(r.ok); near(r.comp.R1.i, 0, 1e-6);
+  assert.equal(net.partResult(part(doc, 'D1'), r).burned, true);
+  assert.ok(resultDiagnostics(doc, net, r).some((d) => d.code === 'burned'));
+});
