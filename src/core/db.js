@@ -1,12 +1,16 @@
 // Minimal promise-based IndexedDB wrapper. All app data lives locally.
 const DB_NAME = 'outofshape-lab';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2: circuits, catalog, scenes, kv
 const STORES = {
   docs: 'id', // document metadata {id,name,created,updated,pageCount,kind,links,analysis}
   files: null, // docId -> ArrayBuffer (original PDF bytes, never modified)
   annotations: null, // docId -> {pages: {index: [objects]}}
   programs: 'id', // saved PLC programs {id,scenarioId,name,lang,source,updated}
   thumbs: null, // docId -> dataURL of first page
+  circuits: 'id', // user circuits + edited template copies (schema-versioned documents)
+  catalog: 'id', // user-defined parts and kit elements
+  scenes: 'id', // user-built PLC scenes
+  kv: null, // small app-level values (favourites, last-used settings)
 };
 
 let dbp = null;

@@ -407,3 +407,84 @@ tr.forced .force { background: var(--warn); color: #fff; border-color: var(--war
   .doc-panel { position: absolute; right: 0; top: 104px; bottom: 0; z-index: 4; box-shadow: var(--shadow); }
 }
 .ld-branch.parallel::after { content: ''; position: absolute; right: 0; top: -30px; bottom: 50%; border-right: 2px solid var(--text); }
+
+/* ===== Circuit editor ============================================================== */
+.section-h { margin: 22px 0 8px; }
+.ce-view { display: flex; flex-direction: column; height: 100%; }
+.ce-body { flex: 1; display: flex; min-height: 0; }
+.ce-palette { width: 190px; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; padding: 8px; gap: 6px; }
+.ce-pal-list { overflow: auto; flex: 1; }
+.ce-pal-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; background: transparent; color: var(--text); padding: 3px 6px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12px; text-align: left; }
+.ce-pal-item:hover { background: var(--panel2); border-color: var(--line); }
+.ce-pal-sym { width: 46px; height: 34px; flex-shrink: 0; color: var(--sch-ink); }
+.ce-pal-sym svg { width: 100%; height: 100%; }
+.ce-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ce-canvas { flex: 1; min-height: 0; position: relative; }
+.ce-host { position: relative; overflow: hidden; background-color: var(--sch-bg); background-image: radial-gradient(var(--sch-grid) 1.4px, transparent 1.6px); color: var(--sch-ink); }
+.ce-svg { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; touch-action: none; user-select: none; }
+.ce-svg[data-tool='wire'], .ce-svg[data-tool='label'], .ce-svg[data-tool^='probe'] { cursor: crosshair; }
+.ce-part line, .ce-part path, .ce-part circle, .ce-part rect, .ce-part polyline { stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.ce-part .thick { stroke-width: 3.2; }
+.ce-part .thin { stroke-width: 1.5; }
+.ce-part .f { fill: currentColor; }
+.ce-part .bg { fill: var(--sch-bg); }
+.ce-part .on { fill: color-mix(in srgb, #22c55e 40%, var(--sch-bg)); }
+.ce-part .warn { stroke: var(--err); stroke-width: 2.5; }
+.ce-part .glow { stroke: none; filter: blur(4px); }
+.ce-part text { fill: currentColor; stroke: none; font: 600 10px var(--mono); text-anchor: middle; }
+.ce-part text.sym-big { font: 700 15px Inter, system-ui, sans-serif; }
+.ce-part.sel { color: var(--accent); }
+.ce-part.off { opacity: 0.45; }
+.ce-part.ghost { opacity: 0.55; color: var(--accent); pointer-events: none; }
+.ce-part .ce-pin { fill: var(--sch-bg); stroke-width: 1.4; opacity: 0; }
+.ce-part .ce-pin.open { opacity: 1; stroke: var(--warn); }
+.ce-part:hover .ce-pin, .ce-svg[data-tool='wire'] .ce-pin { opacity: 1; }
+.ce-part text.ce-name { font: 700 12px Inter, system-ui, sans-serif; }
+.ce-part text.ce-val { font: 11px var(--mono); fill: var(--muted); }
+.ce-wire { fill: none; stroke: var(--sch-ink); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.ce-wire.sel { stroke: var(--accent); stroke-width: 3; }
+.ce-wire.error { stroke: var(--err); }
+.ce-wire.warning { stroke: var(--warn); }
+.ce-wire.preview { stroke: var(--accent); stroke-dasharray: 6 4; pointer-events: none; }
+.ce-handle { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+.ce-junction { fill: var(--sch-ink); }
+.ce-halo { fill: color-mix(in srgb, var(--warn) 22%, transparent); stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.ce-halo.error { fill: color-mix(in srgb, var(--err) 20%, transparent); stroke: var(--err); animation: blink 1.2s steps(2) infinite; }
+.ce-label circle { fill: var(--accent2); }
+.ce-label path { fill: color-mix(in srgb, var(--accent2) 25%, var(--sch-bg)); stroke: var(--accent2); stroke-width: 1.5; }
+.ce-label text { font: 700 12px var(--mono); fill: var(--sch-ink); }
+.ce-label.sel path { stroke: var(--accent); stroke-width: 2.5; }
+.ce-probe text { font: 700 11px var(--mono); fill: #10151f; text-anchor: middle; }
+.ce-probe.sel rect { stroke: var(--accent); stroke-width: 2.5; }
+.ce-probe-link { stroke-width: 1.5; stroke-dasharray: 4 4; }
+.ce-box { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-dasharray: 5 4; }
+.ce-snap { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.ce-snap.pin, .ce-snap.wire { stroke: var(--ok); stroke-width: 2.5; }
+.ce-tip { position: absolute; display: none; pointer-events: none; z-index: 3; background: rgba(15, 20, 32, 0.92); color: #eef2ff; border-radius: 9px; padding: 7px 10px; font: 12px var(--mono); min-width: 120px; box-shadow: var(--shadow); }
+.ce-tip b { font: 700 12px Inter, system-ui, sans-serif; }
+.ce-tip span { color: #9fb0d4; font: 11px Inter, system-ui, sans-serif; }
+.ce-tip .warn { color: #ff9c9c; }
+.ce-tip .hint { color: #9fb0d4; font: 11px Inter, system-ui, sans-serif; margin-top: 3px; }
+.ce-status { min-height: 24px; padding: 3px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); background: var(--bg2); }
+.ce-scope { border-top: 1px solid var(--line); padding: 8px 12px; background: var(--panel); }
+.ce-scope .scope { height: 170px; }
+.ce-scope .legend { margin: 0; flex: 1; }
+.ce-side { width: 310px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--bg2); padding: 10px; display: grid; gap: 10px; align-content: start; }
+.ce-card { padding: 10px; box-shadow: none; }
+.part-form { display: grid; gap: 8px; }
+.field { display: grid; gap: 3px; font-size: 12px; }
+.field > span { font-weight: 600; }
+.field > span i { font-weight: 400; color: var(--muted); font-style: normal; }
+.field > span em { font-style: normal; font-size: 10px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.field.inline { grid-template-columns: 1fr auto; align-items: center; }
+.field-hint { font: 11px var(--mono); color: var(--muted); }
+.field-err { font-size: 11px; color: var(--err); }
+.input.bad { border-color: var(--err); outline: 2px solid color-mix(in srgb, var(--err) 30%, transparent); }
+.ce-problem { display: block; width: 100%; text-align: left; border: 1px solid var(--line); border-left: 4px solid var(--warn); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer; margin-top: 6px; }
+.ce-problem.error { border-left-color: var(--err); }
+.ok-text { color: var(--ok); }
+.ce-meas { display: flex; align-items: center; gap: 6px; padding: 4px 4px; border-bottom: 1px dashed var(--line); font-size: 12px; cursor: pointer; border-radius: 6px; }
+.ce-meas.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ce-meas i { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.ce-meas b { font-family: var(--mono); }
+.btn.active { border-color: var(--accent); color: var(--accent); }

@@ -1,196 +1,516 @@
-import { h, clear, fmt } from '../core/dom.js';
-import { getCircuit, CIRCUITS } from '../circuits/library.js';
-import { Circuit } from '../circuits/mna.js';
-import { renderSchematic } from '../circuits/schematic.js';
+// Circuit workbench: the schematic editor plus palette, inspector, measurements,
+// problems list and oscilloscope. Works the same for templates and user circuits.
+import { h, clear, toast, modal, prompt } from '../core/dom.js';
+import { navigate } from '../core/router.js';
+import { CircuitEditor, probeColor } from '../circuits/editor.js';
+import { Simulation, SPEEDS } from '../circuits/sim.js';
+import { PARTS, CATEGORY_ORDER } from '../circuits/parts.js';
+import { newCircuit } from '../circuits/model.js';
+import { openCircuit, saveCircuit, saveCircuitAs, resetTemplate, isTemplateId, deleteCircuit } from '../circuits/store.js';
+import { getCircuit as libraryEntry } from '../circuits/library.js';
+import { parseSI, editSI, formatSI } from '../circuits/units.js';
 import { getDoc } from '../docs/store.js';
 import { parseLaunch } from './launch.js';
 
-// log-scale slider helpers
-const toSlider = (p, v) => (p.log ? (Math.log10(v) - Math.log10(p.min)) / (Math.log10(p.max) - Math.log10(p.min)) * 1000 : v);
-const fromSlider = (p, s) => {
-  if (!p.log) return +s;
-  const v = 10 ** (Math.log10(p.min) + (s / 1000) * (Math.log10(p.max) - Math.log10(p.min)));
-  // snap to E12 series for resistor-like values
-  const e12 = [1, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2, 10];
-  const dec = 10 ** Math.floor(Math.log10(v));
-  const m = v / dec;
-  const best = e12.reduce((a, b) => (Math.abs(b - m) < Math.abs(a - m) ? b : a));
-  return +(best * dec).toPrecision(3);
-};
+/** Build an editing form for a part. Returns {el, valid(), apply()}. */
+function partForm(doc, part, { live } = {}) {
+  const def = PARTS[part.type];
+  const draft = { name: part.name, params: { ...part.params } };
+  const errors = new Map();
+  const rows = [];
+  const el = h('div', { class: 'part-form' });
+  const stop = (inp) => inp.addEventListener('keydown', (e) => e.stopPropagation());
+  const changed = () => { if (live) live(draft); redrawWhen(); };
+
+  if (!def.noName) {
+    const inp = h('input', { class: 'input slim', value: part.name, spellcheck: false });
+    stop(inp);
+    const msg = h('div', { class: 'field-err' });
+    inp.addEventListener('input', () => {
+      const v = inp.value.trim();
+      const clash = doc.parts.some((p) => p !== part && p.name === v);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) errors.set('name', 'Use letters, digits and _ (e.g. R1).');
+      else if (clash) errors.set('name', `"${v}" is already used.`);
+      else { errors.delete('name'); draft.name = v; changed(); }
+      msg.textContent = errors.get('name') || '';
+      inp.classList.toggle('bad', errors.has('name'));
+    });
+    el.append(h('label', { class: 'field' }, h('span', {}, 'Name'), inp, msg));
+  }
+  for (const prm of def.params) {
+    let inp;
+    const msg = h('div', { class: 'field-err' });
+    const hint = h('span', { class: 'field-hint' });
+    if (prm.type === 'select') {
+      inp = h('select', { class: 'input slim' }, prm.options.map((o) => h('option', { value: o, selected: draft.params[prm.key] === o }, o)));
+      inp.addEventListener('change', () => { draft.params[prm.key] = inp.value; changed(); });
+    } else if (prm.type === 'bool') {
+      inp = h('input', { type: 'checkbox', checked: !!draft.params[prm.key] });
+      inp.addEventListener('change', () => { draft.params[prm.key] = inp.checked; changed(); });
+    } else if (prm.type === 'text') {
+      inp = h('input', { class: 'input slim', value: draft.params[prm.key] ?? '', spellcheck: false });
+      stop(inp);
+      inp.addEventListener('input', () => { draft.params[prm.key] = inp.value.trim(); changed(); });
+    } else {
+      inp = h('input', { class: 'input slim', value: editSI(draft.params[prm.key]), spellcheck: false, title: 'Engineering notation: 4k7, 100n, 2.2u, 1M, 10m …' });
+      stop(inp);
+      const show = () => { hint.textContent = errors.has(prm.key) ? '' : `= ${formatSI(draft.params[prm.key], prm.unit)}`; };
+      const check = () => {
+        const v = parseSI(inp.value);
+        if (Number.isNaN(v)) errors.set(prm.key, 'Not a number. Examples: 470, 4k7, 100n, 2.2u, 1e-3');
+        else if (prm.min !== undefined && v < prm.min) errors.set(prm.key, `Must be at least ${formatSI(prm.min, prm.unit)}.`);
+        else if (prm.max !== undefined && v > prm.max) errors.set(prm.key, `Must be at most ${formatSI(prm.max, prm.unit)}.`);
+        else { errors.delete(prm.key); draft.params[prm.key] = v; }
+        msg.textContent = errors.get(prm.key) || '';
+        inp.classList.toggle('bad', errors.has(prm.key));
+        show();
+        if (!errors.has(prm.key)) changed();
+      };
+      inp.addEventListener('input', check);
+      show();
+      if (prm.slider) {
+        const sl = h('input', { type: 'range', min: prm.min, max: prm.max, step: (prm.max - prm.min) / 200, value: draft.params[prm.key] });
+        sl.addEventListener('input', () => { inp.value = editSI(+sl.value); check(); });
+        rows.push({ prm, row: null, extra: sl });
+      }
+    }
+    const row = h('label', { class: 'field' + (prm.type === 'bool' ? ' inline' : '') }, h('span', {}, prm.label, prm.unit && prm.type !== 'bool' ? h('i', {}, ` [${prm.unit}]`) : null, prm.limit ? h('em', { title: 'Rated limit: exceeding it is shown as an overload' }, ' limit') : null), inp, hint, msg);
+    const r = rows.find((x) => x.prm === prm);
+    if (r && r.extra) row.append(r.extra);
+    rows.push({ prm, row });
+    el.append(row);
+  }
+  function redrawWhen() {
+    for (const { prm, row } of rows) if (row && prm.when) row.style.display = prm.when(draft.params) ? '' : 'none';
+  }
+  redrawWhen();
+  return {
+    el,
+    valid: () => errors.size === 0,
+    apply() { if (!def.noName) part.name = draft.name; Object.assign(part.params, draft.params); },
+  };
+}
 
 export async function circuitView(root, id, q = {}) {
-  const def = getCircuit(id);
   clear(root);
-  if (!def) { root.append(h('div', { class: 'page' }, 'Unknown circuit')); return; }
-  document.getElementById('crumb').textContent = `Lab › ${def.name}`;
   const launch = parseLaunch(q);
-  const doc = launch.docId ? await getDoc(launch.docId) : null;
-  const circuit = new Circuit(def.components);
-  const fromDoc = new Set();
-  // apply defaults + document parameters
-  for (const p of def.params) {
-    let v = p.default;
-    if (launch.params && p.key in launch.params) { v = launch.params[p.key]; fromDoc.add(p.key); }
-    circuit.set(p.comp, p.field, v);
+  const fromDoc = launch.docId ? await getDoc(launch.docId) : null;
+
+  let opened;
+  if (id === 'new') {
+    const doc = newCircuit('Untitled circuit');
+    await saveCircuit(doc);
+    navigate('/circuit/' + doc.id);
+    return null;
   }
+  opened = await openCircuit(id);
+  if (!opened) { root.append(h('div', { class: 'page' }, h('h2', {}, 'Circuit not found'), h('a', { href: '#/lab?tab=circuits' }, 'Back to circuits'))); return null; }
+  let doc = opened.doc;
+  const templateId = isTemplateId(id) ? id : null;
+  const lib = templateId ? libraryEntry(templateId) : null;
 
-  const schHost = h('div', { class: 'sch-host' });
-  const readHost = h('div', { class: 'readouts' });
-  const paramHost = h('div', { class: 'params-pane' });
-  const scopeCanvas = def.transient ? h('canvas', { class: 'scope', width: 900, height: 260 }) : null;
-  const playBtn = def.transient ? h('button', { class: 'btn small' }, '⏸ Pause') : null;
-  const tbSel = def.transient ? h('select', { class: 'input slim', title: 'Time base' }, [['auto', 'Time base: auto (5τ ≈ 4 s)'], ['real', 'Real time'], ['slow', 'Slow motion ×0.1']].map(([v, l]) => h('option', { value: v }, l))) : null;
-
-  root.append(h('div', { class: 'page circuit-view' },
-    h('div', { class: 'toolbar flat' },
-      doc ? h('a', { class: 'btn ghost', href: `#/doc/${doc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${doc.name}`) : h('a', { class: 'btn ghost', href: '#/lab?tab=circuits' }, '← Circuits'),
-      h('div', { class: 'tb-title' }, h('span', { class: 'tb-icon' }, def.icon), h('b', {}, def.name), h('span', { class: `badge diff-${def.difficulty.toLowerCase()}` }, def.difficulty)),
-      h('div', { class: 'spacer' }),
-      h('select', { class: 'input slim', onchange: (e) => { location.hash = '/circuit/' + e.target.value; } }, CIRCUITS.map((c) => h('option', { value: c.id, selected: c.id === def.id }, c.name)))),
-    h('div', { class: 'circuit-grid' },
-      h('div', { class: 'card sch-card' },
-        h('div', { class: 'card-h' }, h('b', {}, 'Schematic'), h('span', { class: 'small muted' }, 'Click switches to operate them · moving dashes show conventional current')),
-        schHost,
-        scopeCanvas ? h('div', { class: 'scope-wrap' }, h('div', { class: 'card-h' }, h('b', {}, 'Oscilloscope'), h('div', { class: 'row gap' }, tbSel, playBtn, h('button', { class: 'btn small', onclick: () => { trace.length = 0; } }, 'Clear'))), scopeCanvas, h('div', { class: 'legend' }, def.scope.map((s) => h('span', {}, h('i', { style: { background: s.color } }), s.label)))) : null),
-      h('div', { class: 'side-col' },
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('b', {}, 'Live readouts')), readHost),
-        h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('b', {}, 'Component values')), paramHost),
-        h('div', { class: 'card theory' }, h('div', { class: 'card-h' }, h('b', {}, 'Theory')), h('div', { html: def.theory }))))));
-
-  // parameters
-  if (doc && fromDoc.size) paramHost.append(h('div', { class: 'note' }, `📄 ${fromDoc.size} value(s) taken from “${doc.name}”.`));
-  for (const p of def.params) {
-    const comp = circuit.get(p.comp);
-    const val = h('span', { class: 'pval' });
-    let ctl;
-    const show = () => { val.textContent = p.type === 'select' ? '' : fmt(comp[p.field], p.unit); };
-    if (p.type === 'select') {
-      ctl = h('select', { class: 'input' }, p.options.map((o) => h('option', { value: o, selected: comp[p.field] === o }, o)));
-      ctl.addEventListener('change', () => { circuit.set(p.comp, p.field, ctl.value); solve(); });
-    } else {
-      ctl = h('input', { type: 'range', min: p.log ? 0 : p.min, max: p.log ? 1000 : p.max, step: p.log ? 1 : p.step, value: toSlider(p, comp[p.field]) });
-      ctl.addEventListener('input', () => { circuit.set(p.comp, p.field, fromSlider(p, +ctl.value)); show(); solve(); });
+  // values extracted from a document land on the matching template parts
+  const applied = [];
+  if (lib && launch.params) {
+    for (const prm of lib.params) {
+      if (!(prm.key in launch.params)) continue;
+      const part = doc.parts.find((p) => p.name === prm.comp);
+      if (part && prm.field in part.params) { part.params[prm.field] = launch.params[prm.key]; applied.push(`${prm.comp}.${prm.field}`); }
     }
-    show();
-    paramHost.append(h('div', { class: 'param' }, h('div', { class: 'row between' }, h('label', {}, p.label, fromDoc.has(p.key) ? h('span', { class: 'chip tiny' }, 'from doc') : null), val), ctl));
   }
 
-  const onSwitch = (c, v) => {
-    if (c.radio) {
-      for (const o of circuit.components) if (o.radio === c.radio) o.closed = o.id === c.id;
-    } else circuit.set(c.id, 'closed', v);
-    // keep def components in sync for the renderer (it reads c.closed)
-    for (const d of def.components) { const cc = circuit.get(d.id); if (cc && 'closed' in cc) d.closed = cc.closed; }
-    solve();
-  };
-  // renderer reads values from the circuit copies
-  const view = renderSchematic(schHost, { ...def, components: circuit.components }, circuit, { onSwitch: (c, v) => onSwitch(c, v) });
+  document.getElementById('crumb').textContent = `Lab › ${doc.name}`;
+  const sim = new Simulation();
 
-  const readRows = def.readouts.map((r) => {
-    const v = h('b', {});
-    readHost.append(h('div', { class: 'readout' }, h('span', {}, r.label), v));
-    return { r, v };
+  // ---- layout -------------------------------------------------------------------
+  const canvasHost = h('div', { class: 'ce-canvas' });
+  const statusEl = h('div', { class: 'ce-status' });
+  const palette = h('div', { class: 'ce-palette' });
+  const side = h('div', { class: 'ce-side' });
+  const scopeCanvas = h('canvas', { class: 'scope', width: 1200, height: 220 });
+  const scopeLegend = h('div', { class: 'legend' });
+  const scopeWrap = h('div', { class: 'ce-scope' });
+  const nameEl = h('input', { class: 'doc-name', value: doc.name, title: 'Circuit name' });
+  nameEl.addEventListener('keydown', (e) => e.stopPropagation());
+  nameEl.addEventListener('change', () => { doc.name = nameEl.value.trim() || doc.name; editor.commit('rename'); });
+
+  const toolBtns = {};
+  const tool = (key, icon, title, arg) => (toolBtns[key] = h('button', { class: 'tool', title, onclick: () => editor.setTool(key, arg) }, icon));
+  const undoBtn = h('button', { class: 'icon-btn', title: 'Undo (Ctrl+Z)', onclick: () => editor.undo() }, '↶');
+  const redoBtn = h('button', { class: 'icon-btn', title: 'Redo (Ctrl+Shift+Z)', onclick: () => editor.redo() }, '↷');
+  const autoBtn = h('button', { class: 'btn small', title: 'Wire routing: manual corner points, or automatic right-angle legs between clicks' }, 'Routing: manual');
+  autoBtn.addEventListener('click', () => { editor.autoRoute = !editor.autoRoute; autoBtn.textContent = editor.autoRoute ? 'Routing: right-angle' : 'Routing: manual'; autoBtn.classList.toggle('active', editor.autoRoute); });
+  const runBtn = h('button', { class: 'btn small', title: 'Pause / continue the simulation' }, '⏸ Pause');
+  runBtn.addEventListener('click', () => { sim.running = !sim.running; runBtn.textContent = sim.running ? '⏸ Pause' : '▶ Run'; });
+  const speedSel = h('select', { class: 'input slim', title: 'Simulated time per real second' }, SPEEDS.map(([v, l]) => h('option', { value: v }, l)));
+  speedSel.addEventListener('change', () => { sim.speed = speedSel.value; sim.samples = []; });
+  const fileBtn = h('button', { class: 'btn small' }, 'File ▾');
+  const badge = h('span', { class: 'badge' });
+
+  const toolbar = h('div', { class: 'toolbar editor-tb' },
+    fromDoc ? h('a', { class: 'btn ghost', href: `#/doc/${fromDoc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${fromDoc.name}`) : h('a', { class: 'btn ghost', href: '#/lab?tab=circuits' }, '← Circuits'),
+    nameEl, badge,
+    h('div', { class: 'sep' }),
+    h('div', { class: 'tool-group' },
+      tool('select', '🖐', 'Select / move (V). Drag a box to select several, Shift adds.'),
+      tool('wire', '✏️', 'Draw wire (W)'),
+      tool('label', '🏷', 'Net label (L)'),
+      tool('probeV', 'V', 'Voltmeter probe'),
+      tool('probeA', 'A', 'Ammeter probe'),
+      tool('probeR', 'Ω', 'Ohmmeter probe')),
+    h('div', { class: 'sep' }),
+    h('button', { class: 'icon-btn', title: 'Rotate (R)', onclick: () => editor.rotateSel() }, '⟳'),
+    h('button', { class: 'icon-btn', title: 'Mirror (X)', onclick: () => editor.mirrorSel() }, '⇋'),
+    h('button', { class: 'icon-btn', title: 'Duplicate (Ctrl+D)', onclick: () => editor.duplicate() }, '⧉'),
+    h('button', { class: 'icon-btn', title: 'Delete (Del)', onclick: () => editor.deleteSel() }, '🗑'),
+    undoBtn, redoBtn, autoBtn,
+    h('div', { class: 'spacer' }),
+    runBtn, speedSel,
+    h('button', { class: 'btn small', title: 'Jump to the steady state (capacitors charged)', onclick: () => { sim.settle(); toast('Jumped to the DC operating point'); } }, 'Settle'),
+    h('button', { class: 'btn small', title: 'Discharge capacitors, replace fuses, restart time', onclick: () => { sim.restart(); editor.renderAll(); } }, '⟲ Restart'),
+    h('button', { class: 'icon-btn', title: 'Zoom out (−)', onclick: () => editor.zoomAt(1 / 1.2) }, '−'),
+    h('button', { class: 'icon-btn', title: 'Zoom in (+)', onclick: () => editor.zoomAt(1.2) }, '+'),
+    h('button', { class: 'btn small', title: 'Fit to window (F)', onclick: () => editor.fit() }, 'Fit'),
+    fileBtn);
+
+  root.append(h('div', { class: 'ce-view' }, toolbar,
+    h('div', { class: 'ce-body' }, palette, h('div', { class: 'ce-main' }, canvasHost, statusEl, scopeWrap), side)));
+
+  // ---- palette --------------------------------------------------------------------
+  function drawPalette() {
+    clear(palette);
+    const search = h('input', { class: 'input slim', placeholder: 'Search parts…' });
+    search.addEventListener('keydown', (e) => e.stopPropagation());
+    const list = h('div', { class: 'ce-pal-list' });
+    const fill = () => {
+      clear(list);
+      const term = search.value.trim().toLowerCase();
+      for (const cat of CATEGORY_ORDER) {
+        const items = Object.entries(PARTS).filter(([, d]) => d.category === cat && (!term || d.name.toLowerCase().includes(term)));
+        if (!items.length) continue;
+        list.append(h('div', { class: 'menu-h' }, cat));
+        for (const [type, d] of items) {
+          const b = h('button', { class: 'ce-pal-item', title: `Place ${d.name}`, onclick: () => editor.setTool('place', type) },
+            h('span', { class: 'ce-pal-sym', html: `<svg viewBox="-46 -34 92 68"><g class="ce-part">${d.symbol(Object.fromEntries(d.params.map((p) => [p.key, p.def])), null)}</g></svg>` }),
+            h('span', {}, d.name));
+          list.append(b);
+        }
+      }
+    };
+    search.addEventListener('input', fill);
+    palette.append(search, list);
+    fill();
+  }
+
+  // ---- side panel -------------------------------------------------------------------
+  const inspector = h('div', { class: 'card ce-card' });
+  const measure = h('div', { class: 'card ce-card' });
+  const problems = h('div', { class: 'card ce-card' });
+  const info = h('div', { class: 'card ce-card theory' });
+  side.append(inspector, problems, measure, info);
+
+  function drawInspector() {
+    clear(inspector);
+    const sel = [...editor.sel].map((sid) => editor.item(sid)).filter(Boolean);
+    if (sel.length === 1 && sel[0].kind === 'part') {
+      const part = sel[0].o;
+      const def = PARTS[part.type];
+      inspector.append(h('div', { class: 'card-h' }, h('b', {}, def.name), h('span', { class: 'small muted' }, 'double-click the part for a dialog')));
+      const form = partForm(doc, part, { live: () => { if (form.valid()) { form.apply(); keepInspector = true; editor.commit('value'); keepInspector = false; } } });
+      inspector.append(form.el);
+      for (const a of def.actions || []) inspector.append(h('button', { class: 'btn small', onclick: () => { a.run(sim, part); editor.renderAll(); } }, a.label));
+      return;
+    }
+    if (sel.length === 1 && sel[0].kind === 'label') {
+      const l = sel[0].o;
+      const inp = h('input', { class: 'input slim', value: l.text });
+      inp.addEventListener('keydown', (e) => e.stopPropagation());
+      inp.addEventListener('change', () => { if (inp.value.trim()) { l.text = inp.value.trim(); editor.commit('label'); } });
+      inspector.append(h('div', { class: 'card-h' }, h('b', {}, 'Net label')), h('label', { class: 'field' }, h('span', {}, 'Net name'), inp), h('p', { class: 'small muted' }, 'All wire ends carrying the same name are connected. "GND" or "0" makes the net ground.'));
+      return;
+    }
+    if (sel.length === 1 && sel[0].kind === 'wire') {
+      const w = sel[0].o;
+      inspector.append(h('div', { class: 'card-h' }, h('b', {}, 'Wire')), h('p', { class: 'small' }, `${w.pts.length} points. Drag the square handles to move corner points, drag a segment to shift it. Double-click a segment to add a corner, double-click a corner to remove it.`));
+      return;
+    }
+    if (sel.length === 1 && sel[0].kind === 'probe') {
+      const p = sel[0].o;
+      const inp = h('input', { class: 'input slim', value: p.name || '', placeholder: sim.probeLabel(p) });
+      inp.addEventListener('keydown', (e) => e.stopPropagation());
+      inp.addEventListener('change', () => { p.name = inp.value.trim(); editor.commit('probe'); });
+      inspector.append(h('div', { class: 'card-h' }, h('b', {}, 'Probe')), h('label', { class: 'field' }, h('span', {}, 'Name'), inp));
+      return;
+    }
+    if (sel.length > 1) {
+      inspector.append(h('div', { class: 'card-h' }, h('b', {}, `${sel.length} items selected`)), h('p', { class: 'small muted' }, 'Drag to move, R rotates, X mirrors, Del deletes, Ctrl+C / Ctrl+V copies, Ctrl+D duplicates.'));
+      return;
+    }
+    inspector.append(h('div', { class: 'card-h' }, h('b', {}, 'Circuit')),
+      h('p', { class: 'small' }, `${doc.parts.filter((p) => p.type !== 'GND').length} parts · ${doc.wires.length} wires · ${doc.probes.length} probes`),
+      h('p', { class: 'small muted' }, 'Pick a part on the left and click to place it. Drag from a pin to draw a wire. Hover anything for live values. Hold Alt for free placement off the grid.'));
+  }
+
+  function drawProblems() {
+    clear(problems);
+    const list = sim.diagnostics;
+    problems.append(h('div', { class: 'card-h' }, h('b', {}, list.length ? `Problems (${list.length})` : 'Problems'), list.length ? null : h('span', { class: 'small ok-text' }, '✓ none')));
+    for (const d of list) {
+      problems.append(h('button', { class: `ce-problem ${d.level}`, title: 'Click to select the affected parts', onclick: () => { if (d.parts && d.parts.length) editor.select(d.parts); } },
+        h('b', {}, d.level === 'error' ? '⛔ ' : '⚠ '), d.message));
+    }
+    problems.dataset.sig = sigOf(list);
+  }
+  const sigOf = (list) => list.map((d) => d.code + (d.parts || []).join(',')).join('|');
+
+  const measureRows = new Map();
+  function drawMeasure() {
+    clear(measure);
+    measureRows.clear();
+    measure.append(h('div', { class: 'card-h' }, h('b', {}, 'Measurements'),
+      h('div', { class: 'row gap' },
+        h('button', { class: 'btn tiny', title: 'Add voltmeter probe', onclick: () => editor.setTool('probeV') }, '+ V'),
+        h('button', { class: 'btn tiny', title: 'Add ammeter probe', onclick: () => editor.setTool('probeA') }, '+ A'),
+        h('button', { class: 'btn tiny', title: 'Add ohmmeter probe', onclick: () => editor.setTool('probeR') }, '+ Ω'))));
+    if (!doc.probes.length) measure.append(h('p', { class: 'small muted' }, 'No probes yet. Add a V, A or Ω probe, or simply hover over the schematic.'));
+    for (const p of doc.probes) {
+      const val = h('b', {});
+      const sc = h('input', { type: 'checkbox', checked: !!p.scope, disabled: p.kind === 'R', title: p.kind === 'R' ? 'Resistance is not shown on the oscilloscope' : 'Show on the oscilloscope (up to 4 channels)' });
+      sc.addEventListener('change', () => {
+        if (sc.checked && doc.probes.filter((x) => x.scope).length >= 4) { sc.checked = false; toast('The oscilloscope has 4 channels. Untick another probe first.', 'err'); return; }
+        p.scope = sc.checked;
+        editor.commit('probe');
+      });
+      measure.append(h('div', { class: 'ce-meas' + (editor.sel.has(p.id) ? ' sel' : ''), onclick: (e) => { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON') editor.select([p.id]); } },
+        h('i', { style: { background: probeColor(doc, p) } }), h('span', { class: 'grow' }, sim.probeLabel(p)), val, sc,
+        h('button', { class: 'btn tiny', title: 'Remove probe', onclick: () => { doc.probes = doc.probes.filter((x) => x !== p); editor.commit('probe'); } }, '✕')));
+      measureRows.set(p.id, { p, val });
+    }
+    if (doc.probes.some((p) => p.kind === 'R')) measure.append(h('p', { class: 'small muted' }, 'Ω is measured like a multimeter on a switched-off circuit: sources off, capacitors open, semiconductors not conducting.'));
+  }
+
+  function drawInfo() {
+    clear(info);
+    if (lib) {
+      info.append(h('div', { class: 'card-h' }, h('b', {}, 'About this template')), h('p', { class: 'small' }, lib.summary), h('div', { html: lib.theory }));
+      if (applied.length && fromDoc) info.append(h('div', { class: 'note' }, `📄 ${applied.length} value(s) taken from “${fromDoc.name}”: ${applied.join(', ')}`));
+    } else info.append(h('div', { class: 'card-h' }, h('b', {}, 'Shortcuts')), h('p', { class: 'small' }, 'V select · W wire · L label · R rotate · X mirror · Del delete · Ctrl+C/V/D copy, paste, duplicate · Ctrl+Z/Y undo, redo · F fit · mouse wheel zooms · right or middle drag pans · Alt = off-grid'));
+  }
+
+  function drawBadge() {
+    badge.textContent = templateId ? (modified ? 'Template · edited copy' : 'Template') : 'My circuit';
+    badge.className = 'badge ' + (templateId ? 'diff-intermediate' : 'diff-beginner');
+  }
+
+  // ---- part dialog (double-click) ------------------------------------------------------
+  async function editPartDialog(part) {
+    const def = PARTS[part.type];
+    if (!def.params.length && def.noName) return;
+    const form = partForm(doc, part);
+    const ok = await new Promise((resolve) => {
+      const back = h('div', { class: 'modal-back' });
+      const close = (v) => { back.remove(); resolve(v); };
+      const okBtn = h('button', { class: 'btn primary', onclick: () => { if (form.valid()) close(true); else toast('Fix the fields marked in red first.', 'err'); } }, 'OK');
+      back.append(h('div', { class: 'modal' },
+        h('div', { class: 'modal-head' }, h('h3', {}, `${def.name}${part.name ? ' ' + part.name : ''}`), h('button', { class: 'icon-btn', onclick: () => close(false) }, '✕')),
+        h('div', { class: 'modal-body' }, form.el, h('p', { class: 'small muted' }, 'Values accept SI prefixes: 4k7 = 4.7 kΩ, 100n = 100 nF, 2.2u, 1M, 10m.')),
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: () => close(false) }, 'Cancel'), okBtn)));
+      back.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') okBtn.click(); if (e.key === 'Escape') close(false); e.stopPropagation(); });
+      document.body.append(back);
+      const first = back.querySelector('input, select');
+      if (first) { first.focus(); if (first.select) first.select(); }
+    });
+    if (ok) { form.apply(); editor.commit('value'); }
+  }
+
+  // ---- editor ------------------------------------------------------------------------------
+  let modified = opened.modified || applied.length > 0;
+  let keepInspector = false; // true while the inspector itself commits a value (keeps focus in the field)
+  let saveT = 0;
+  const editor = new CircuitEditor(canvasHost, {
+    doc, sim,
+    onChange: () => {
+      modified = true;
+      drawBadge();
+      clearTimeout(saveT);
+      saveT = setTimeout(() => saveCircuit(doc), 400);
+      drawMeasure();
+      drawProblems();
+      document.getElementById('crumb').textContent = `Lab › ${doc.name}`;
+    },
+    onSelect: () => {
+      for (const [k, b] of Object.entries(toolBtns)) b.classList.toggle('active', k === editor.tool);
+      undoBtn.disabled = !editor.undoStack.length;
+      redoBtn.disabled = !editor.redoStack.length;
+      if (!keepInspector) drawInspector();
+      for (const [pid, r] of measureRows) r.val.parentElement.classList.toggle('sel', editor.sel.has(pid));
+    },
+    onStatus: (t) => { statusEl.textContent = t; },
+    onEditPart: editPartDialog,
+  });
+  if (applied.length) saveCircuit(doc);
+
+  // ---- file menu ------------------------------------------------------------------------------
+  fileBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.menu.ce-file').forEach((m) => m.remove());
+    const menu = h('div', { class: 'menu ce-file' });
+    const item = (label, fn) => menu.append(h('button', { onclick: () => { menu.remove(); fn(); } }, label));
+    item('📄 New empty circuit', () => navigate('/circuit/new'));
+    item('💾 Save as…', async () => {
+      const name = await prompt('Save circuit as', templateId ? `${doc.name} (my version)` : `${doc.name} copy`);
+      if (!name) return;
+      const copy = await saveCircuitAs(doc, name);
+      toast('Saved as a new circuit', 'ok');
+      navigate('/circuit/' + copy.id);
+    });
+    if (templateId) {
+      item('↺ Reset to template', async () => {
+        const ok = await modal('Reset to template?', h('p', {}, 'Your changes to this template copy are discarded and the original circuit is restored. Use “Save as…” first if you want to keep them.'), [{ label: 'Cancel', value: null }, { label: 'Reset', value: 'ok', primary: true }]);
+        if (!ok) return;
+        clearTimeout(saveT);
+        doc = await resetTemplate(templateId);
+        modified = false;
+        editor.setDoc(doc, { resetHistory: true, fit: true });
+        nameEl.value = doc.name;
+        drawAll();
+        toast('Template restored', 'ok');
+      });
+    } else {
+      item('🗑 Delete this circuit', async () => {
+        const ok = await modal('Delete circuit?', h('p', {}, `“${doc.name}” is removed from this app.`), [{ label: 'Cancel', value: null }, { label: 'Delete', value: 'ok', primary: true }]);
+        if (!ok) return;
+        clearTimeout(saveT);
+        await deleteCircuit(doc.id);
+        navigate('/lab?tab=circuits');
+      });
+    }
+    item('⬇ Export circuit (.json)', async () => {
+      const { platform } = await import('../platform/index.js');
+      platform.saveFile(`${doc.name}.circuit.json`, JSON.stringify(doc, null, 2), { mime: 'application/json', filters: [{ name: 'Circuit', extensions: ['json'] }] });
+    });
+    item('⬆ Import circuit (.json)…', async () => {
+      const { platform } = await import('../platform/index.js');
+      const [f] = await platform.pickFiles({ accept: '.json', filters: [{ name: 'Circuit', extensions: ['json'] }] });
+      if (!f) return;
+      try {
+        const obj = JSON.parse(await f.text());
+        if (obj.kind !== 'circuit') throw new Error('not a circuit file');
+        const copy = await saveCircuitAs(obj, obj.name || 'Imported circuit');
+        navigate('/circuit/' + copy.id);
+      } catch (err) { toast('Could not import: ' + err.message, 'err', 5000); }
+    });
+    const r = fileBtn.getBoundingClientRect();
+    Object.assign(menu.style, { top: r.bottom + 4 + 'px', left: Math.max(8, r.right - 260) + 'px' });
+    document.body.append(menu);
+    const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', close); } };
+    setTimeout(() => document.addEventListener('pointerdown', close), 0);
   });
 
-  let result = null;
-  function solve() {
-    if (!def.transient) {
-      result = circuit.step();
-      renderReadouts();
+  // ---- oscilloscope -----------------------------------------------------------------------------
+  function drawScope() {
+    const chans = doc.probes.filter((p) => p.scope && p.kind !== 'R').slice(0, 4);
+    scopeWrap.style.display = chans.length ? '' : 'none';
+    if (!chans.length) return;
+    if (!scopeWrap.firstChild) {
+      scopeWrap.append(h('div', { class: 'card-h' }, h('b', {}, 'Oscilloscope'), scopeLegend, h('button', { class: 'btn tiny', onclick: () => { sim.samples = []; } }, 'Clear')), scopeCanvas);
     }
-  }
-  function renderReadouts() {
-    if (!result) return;
-    if (result.error) { readHost.querySelectorAll('b').forEach((b) => { b.textContent = '—'; }); return; }
-    for (const { r, v } of readRows) {
-      let val;
-      if (r.calc) val = r.calc(result, circuit);
-      else if (r.node) val = result.nodeV[r.node];
-      else {
-        const cr = result.comp[r.comp];
-        val = cr ? cr[r.q] : undefined;
-      }
-      if (r.map) v.textContent = r.map(val);
-      else if (typeof val === 'string') v.textContent = val;
-      else if (r.raw) v.textContent = isNaN(val) ? '—' : `${(+val).toFixed(1)} ${r.unit}`;
-      else v.textContent = fmt(r.q === 'i' || r.q === 'ib' ? Math.abs(val) : val, r.unit);
-      const cr = r.comp && result.comp[r.comp];
-      v.classList.toggle('warn', !!(cr && cr.overcurrent));
-    }
-  }
-
-  // transient + scope
-  const trace = [];
-  let running = true;
-  if (playBtn) playBtn.addEventListener('click', () => { running = !running; playBtn.textContent = running ? '⏸ Pause' : '▶ Play'; });
-  let raf = 0;
-  let last = performance.now();
-  const tau = () => {
-    const R = circuit.get('R1') ? circuit.get('R1').R : 1000;
-    const C = circuit.get('C1') ? circuit.get('C1').C : 1e-6;
-    return R * C;
-  };
-  function frame(now) {
-    raf = requestAnimationFrame(frame);
-    const dtReal = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    if (def.transient && running) {
-      const T = tau();
-      const rate = tbSel.value === 'real' ? 1 : tbSel.value === 'slow' ? 0.1 : (5 * T) / 4; // sim seconds per real second
-      const simDt = dtReal * rate;
-      const h0 = T / 200;
-      const steps = Math.max(1, Math.min(400, Math.ceil(simDt / h0)));
-      for (let i = 0; i < steps; i++) result = circuit.step(simDt / steps);
-      const vals = def.scope.map((s) => (s.node ? result.nodeV[s.node] || 0 : (result.comp[s.comp][s.q] || 0) * (s.scale || 1)));
-      trace.push({ t: circuit.time, vals });
-      const window = (tbSel.value === 'auto' ? 10 * T : tbSel.value === 'real' ? Math.max(10 * T, 2) : Math.max(10 * T, 0.2));
-      while (trace.length && trace[0].t < circuit.time - window) trace.shift();
-      drawScope(window, T);
-      renderReadouts();
-    }
-    view.update(result, dtReal);
-  }
-
-  function drawScope(windowS, T) {
-    const c = scopeCanvas;
-    const g = c.getContext('2d');
-    const W = c.width;
-    const H = c.height;
-    const css = getComputedStyle(document.documentElement);
-    g.fillStyle = css.getPropertyValue('--scope-bg') || '#0b1220';
+    const g = scopeCanvas.getContext('2d');
+    const W = scopeCanvas.width;
+    const H = scopeCanvas.height;
+    g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--scope-bg') || '#0b1220';
     g.fillRect(0, 0, W, H);
-    const vmax = Math.max(1, circuit.get('V1').V) * 1.1;
-    const vmin = -vmax * 0.15;
-    const y = (v) => H - 20 - ((v - vmin) / (vmax - vmin)) * (H - 30);
-    g.strokeStyle = 'rgba(120,160,255,0.15)';
+    const s = sim.samples;
+    const win = sim.window || 1;
+    const tEnd = sim.circuit ? sim.circuit.time : 0;
+    const t0 = tEnd - win;
+    // one vertical scale per unit (V on the left, A on the right)
+    const range = { V: [0, 0], A: [0, 0] };
+    for (const smp of s) for (const p of chans) { const v = smp.v[p.id]; if (v == null) continue; const r = range[p.kind]; if (v < r[0]) r[0] = v; if (v > r[1]) r[1] = v; }
+    for (const k of ['V', 'A']) {
+      const r = range[k];
+      const span = Math.max(r[1] - r[0], k === 'V' ? 1e-3 : 1e-6);
+      r[0] -= span * 0.08; r[1] += span * 0.08;
+    }
+    const y = (v, k) => H - 6 - ((v - range[k][0]) / (range[k][1] - range[k][0])) * (H - 12);
+    g.strokeStyle = 'rgba(120,160,255,0.16)';
     g.lineWidth = 1;
     for (let i = 0; i <= 10; i++) { const x = (i / 10) * W; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-    for (let v = 0; v <= vmax; v += Math.max(0.5, Math.round(vmax / 6))) { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillStyle = 'rgba(200,210,255,0.6)'; g.font = '11px monospace'; g.fillText(v.toFixed(1) + 'V', 4, y(v) - 2); }
-    g.fillStyle = 'rgba(200,210,255,0.7)';
-    g.fillText(`${fmt(windowS / 10, 's')}/div · τ = ${fmt(T, 's')}`, W - 190, 14);
-    if (!trace.length) return;
-    const t0 = circuit.time - windowS;
-    def.scope.forEach((s, k) => {
-      g.strokeStyle = s.color;
+    for (let i = 0; i <= 4; i++) { const yy = (i / 4) * H; g.beginPath(); g.moveTo(0, yy); g.lineTo(W, yy); g.stroke(); }
+    g.font = '11px monospace';
+    g.fillStyle = 'rgba(200,210,255,0.75)';
+    if (chans.some((p) => p.kind === 'V')) { g.fillText(formatSI(range.V[1], 'V'), 4, 12); g.fillText(formatSI(range.V[0], 'V'), 4, H - 4); if (range.V[0] < 0 && range.V[1] > 0) { g.strokeStyle = 'rgba(255,255,255,0.3)'; g.beginPath(); g.moveTo(0, y(0, 'V')); g.lineTo(W, y(0, 'V')); g.stroke(); } }
+    if (chans.some((p) => p.kind === 'A')) { g.textAlign = 'right'; g.fillText(formatSI(range.A[1], 'A'), W - 4, 12); g.fillText(formatSI(range.A[0], 'A'), W - 4, H - 4); g.textAlign = 'left'; }
+    g.textAlign = 'center';
+    g.fillText(`${formatSI(win / 10, 's')}/div`, W / 2, 12);
+    g.textAlign = 'left';
+    for (const p of chans) {
+      g.strokeStyle = probeColor(doc, p);
       g.lineWidth = 2;
       g.beginPath();
-      trace.forEach((p, i) => {
-        const x = ((p.t - t0) / windowS) * W;
-        if (i) g.lineTo(x, y(p.vals[k])); else g.moveTo(x, y(p.vals[k]));
-      });
+      let first = true;
+      for (const smp of s) {
+        if (smp.t < t0) continue;
+        const v = smp.v[p.id];
+        if (v == null) continue;
+        const x = ((smp.t - t0) / win) * W;
+        if (first) { g.moveTo(x, y(v, p.kind)); first = false; } else g.lineTo(x, y(v, p.kind));
+      }
       g.stroke();
-    });
-    // 63% marker
-    const v63 = circuit.get('V1').V * 0.632;
-    g.setLineDash([4, 4]);
-    g.strokeStyle = 'rgba(255,159,28,0.5)';
-    g.beginPath(); g.moveTo(0, y(v63)); g.lineTo(W, y(v63)); g.stroke();
-    g.setLineDash([]);
-    g.fillStyle = 'rgba(255,159,28,0.8)';
-    g.fillText('63 %', W - 40, y(v63) - 3);
+    }
+    const sig = chans.map((p) => p.id + sim.probeLabel(p)).join();
+    if (scopeLegend.dataset.sig !== sig) {
+      scopeLegend.dataset.sig = sig;
+      clear(scopeLegend);
+      for (const p of chans) scopeLegend.append(h('span', {}, h('i', { style: { background: probeColor(doc, p) } }), sim.probeLabel(p)));
+    }
   }
 
-  solve();
+  function drawAll() {
+    drawBadge();
+    drawPalette();
+    drawInspector();
+    drawProblems();
+    drawMeasure();
+    drawInfo();
+  }
+  drawAll();
+  editor.setTool('select');
+
+  // ---- frame loop ----------------------------------------------------------------------------------
+  let raf = 0;
+  let last = performance.now();
+  let uiT = 0;
+  let lastErrSig = '';
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    sim.updateWindow();
+    sim.tick(dt);
+    editor.refreshLive();
+    uiT += dt;
+    if (uiT > 0.12) {
+      uiT = 0;
+      for (const { p, val } of measureRows.values()) {
+        const v = sim.probeValue(p);
+        val.textContent = v == null ? '—' : formatSI(v, { V: 'V', A: 'A', R: 'Ω' }[p.kind]);
+      }
+      const sig = sigOf(sim.diagnostics);
+      if (sig !== lastErrSig) { lastErrSig = sig; drawProblems(); editor.renderAll(); }
+    }
+    drawScope();
+  }
   raf = requestAnimationFrame(frame);
-  return { destroy() { cancelAnimationFrame(raf); } };
+  window.__ce = { editor, sim, get doc() { return doc; } }; // handy for debugging from the console
+
+  return {
+    destroy() {
+      cancelAnimationFrame(raf);
+      clearTimeout(saveT);
+      if (modified) saveCircuit(doc);
+      editor.destroy();
+      document.querySelectorAll('.menu.ce-file').forEach((m) => m.remove());
+    },
+  };
 }

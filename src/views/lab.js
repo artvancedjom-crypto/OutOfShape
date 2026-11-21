@@ -3,6 +3,7 @@ import { navigate } from '../core/router.js';
 import { db } from '../core/db.js';
 import { SCENARIOS, DIFFICULTY_ORDER, getScenario } from '../scenarios/index.js';
 import { CIRCUITS } from '../circuits/library.js';
+import { listUserCircuits, modifiedTemplates } from '../circuits/store.js';
 
 export async function labView(root, q = {}) {
   clear(root);
@@ -48,6 +49,10 @@ export async function labView(root, q = {}) {
         });
       body.append(grid);
     } else if (tab === 'circuits') {
+      const edited = await modifiedTemplates();
+      const mine = await listUserCircuits();
+      body.append(h('div', { class: 'row between section-h' }, h('h3', {}, 'Templates'), h('button', { class: 'btn primary', onclick: () => navigate('/circuit/new') }, '＋ New empty circuit')),
+        h('p', { class: 'muted small' }, 'Every template opens as your own editable copy. “File → Reset to template” restores the original.'));
       const grid = h('div', { class: 'scn-grid' });
       for (const c of CIRCUITS) {
         grid.append(h('div', { class: 'scn-card', onclick: () => navigate('/circuit/' + c.id) },
@@ -55,9 +60,18 @@ export async function labView(root, q = {}) {
           h('div', { class: 'scn-body' },
             h('div', { class: 'row between' }, h('h3', {}, c.name), diffBadge(c.difficulty)),
             h('p', { class: 'muted' }, c.summary),
-            h('div', { class: 'small muted' }, c.transient ? '📈 transient + oscilloscope' : '⚡ DC operating point'))));
+            h('div', { class: 'small muted' }, edited.has(c.id) ? '✏️ edited copy' : 'editable template'))));
       }
-      body.append(grid);
+      body.append(grid, h('div', { class: 'section-h' }, h('h3', {}, `My circuits (${mine.length})`)));
+      if (!mine.length) body.append(h('p', { class: 'muted small' }, 'Nothing saved yet. Start with “New empty circuit”, or open a template and use “File → Save as…”.'));
+      const list = h('div', { class: 'prog-list' });
+      for (const c of mine) {
+        list.append(h('div', { class: 'prog-row' },
+          h('div', { class: 'prog-ico' }, '🔌'),
+          h('div', { class: 'grow' }, h('b', {}, c.name), h('div', { class: 'small muted' }, `${c.parts.filter((p) => p.type !== 'GND').length} parts · ${new Date(c.updated).toLocaleString()}${c.basedOn ? ' · based on ' + c.basedOn : ''}`)),
+          h('button', { class: 'btn small primary', onclick: () => navigate('/circuit/' + c.id) }, 'Open')));
+      }
+      body.append(list);
     } else {
       const progs = (await db.all('programs')).filter((p) => !p.autosave).sort((a, b) => b.updated - a.updated);
       if (!progs.length) {

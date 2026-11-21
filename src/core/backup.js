@@ -8,12 +8,18 @@
 //   thumbs.json        {docId: dataURL}
 //   programs.json      saved PLC programs + working copies
 //   settings.json      {theme}
+//   circuits.json      user circuits and edited template copies
+//   catalog.json       user-defined parts and kit elements
+//   scenes.json        user-built PLC scenes
+//   kv.json            [[key, value], …] small app values (favourites …)
 //   files/<docId>.pdf  original, unmodified PDFs
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { db } from './db.js';
 
 export const BACKUP_APP = 'outofshape-lab';
-export const BACKUP_FORMAT = 1;
+export const BACKUP_FORMAT = 2; // 2: adds circuits, catalog, scenes, kv
+// keyed stores that are saved whole: one JSON file each
+const RECORD_STORES = ['circuits', 'catalog', 'scenes'];
 
 const json = (v) => strToU8(JSON.stringify(v));
 
@@ -39,12 +45,18 @@ export async function exportAll(appVersion = '') {
     appVersion,
     counts: { docs: docs.length, programs: programs.filter((p) => !p.autosave).length, files: Object.keys(zip).length },
   };
-  zip['manifest.json'] = json(manifest);
   zip['docs.json'] = json(docs);
   zip['annotations.json'] = json(annotations);
   zip['thumbs.json'] = json(thumbs);
   zip['programs.json'] = json(programs);
   zip['settings.json'] = json({ theme });
+  const extra = {};
+  for (const store of RECORD_STORES) { const rows = await db.all(store); extra[store] = rows.length; zip[`${store}.json`] = json(rows); }
+  const kv = [];
+  for (const k of await db.keys('kv')) kv.push([k, await db.get('kv', k)]);
+  zip['kv.json'] = json(kv);
+  Object.assign(manifest.counts, extra);
+  zip['manifest.json'] = json(manifest);
   return { bytes: zipSync(zip, { level: 6 }), manifest };
 }
 
@@ -67,6 +79,8 @@ export function readBackup(bytes) {
     thumbs: read('thumbs.json', {}),
     programs: read('programs.json', []),
     settings: read('settings.json', {}),
+    records: Object.fromEntries(RECORD_STORES.map((st) => [st, read(`${st}.json`, [])])),
+    kv: read('kv.json', []),
     file: (id) => entries[`files/${id}.pdf`] || null,
   };
 }
@@ -79,7 +93,7 @@ export function readBackup(bytes) {
 export async function importAll(bytes, mode = 'merge') {
   const b = readBackup(bytes);
   if (mode === 'replace') {
-    for (const s of ['docs', 'files', 'annotations', 'thumbs', 'programs']) await db.clear(s);
+    for (const s of ['docs', 'files', 'annotations', 'thumbs', 'programs', 'kv', ...RECORD_STORES]) await db.clear(s);
   }
   let docs = 0;
   let skipped = 0;
@@ -93,5 +107,8 @@ export async function importAll(bytes, mode = 'merge') {
     docs++;
   }
   for (const p of b.programs) await db.put('programs', p);
-  return { docs, skipped, programs: b.programs.filter((p) => !p.autosave).length, manifest: b.manifest };
+  let records = 0;
+  for (const store of RECORD_STORES) for (const row of b.records[store]) { await db.put(store, row); records++; }
+  for (const [k, v] of b.kv) await db.put('kv', v, k);
+  return { docs, skipped, records, programs: b.programs.filter((p) => !p.autosave).length, manifest: b.manifest };
 }
