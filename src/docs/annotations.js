@@ -87,7 +87,7 @@ function getImage(o, onload) {
 }
 
 /** Draw objects on a 2D context already scaled to page points. */
-export function drawObjects(ctx, objs, { onImageLoad, selected } = {}) {
+export function drawObjects(ctx, objs, { onImageLoad, selected, drafts } = {}) {
   for (const o of objs) {
     ctx.save();
     if (o.type === 'pen' || o.type === 'highlighter') {
@@ -110,6 +110,8 @@ export function drawObjects(ctx, objs, { onImageLoad, selected } = {}) {
       const im = getImage(o, onImageLoad);
       if (im) ctx.drawImage(im, o.x, o.y, o.w, o.h);
       else { ctx.strokeStyle = '#999'; ctx.strokeRect(o.x, o.y, o.w, o.h); }
+    } else if (o.type === 'embed') {
+      drawEmbed(ctx, o, onImageLoad, !!(drafts && drafts.has(o.id)));
     }
     ctx.restore();
   }
@@ -120,12 +122,74 @@ export function drawObjects(ctx, objs, { onImageLoad, selected } = {}) {
     ctx.setLineDash([4, 3]);
     ctx.lineWidth = 1;
     ctx.strokeRect(b.x - 3, b.y - 3, b.w + 6, b.h + 6);
-    if (selected.type === 'image' || selected.type === 'text') {
+    if (selected.type === 'image' || selected.type === 'text' || selected.type === 'embed') {
       ctx.setLineDash([]);
       ctx.fillStyle = '#4f7cff';
       ctx.fillRect(b.x + b.w - 2, b.y + b.h - 2, 8, 8);
     }
     ctx.restore();
+  }
+}
+
+// ---- embedded simulations ---------------------------------------------------------
+const EMB_HEADER = 15;
+const EMB_ROW = 11;
+const embedKind = (o) => (o.kind === 'plc' ? 'PLC scene' : 'Circuit');
+
+function drawEmbed(ctx, o, onImageLoad, hasDraft) {
+  const imgH = (o.w * o.imgH) / o.imgW;
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#b9c3d6';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.roundRect(o.x, o.y, o.w, o.h, 4);
+  ctx.fill();
+  ctx.fillStyle = '#eef2fb';
+  ctx.beginPath();
+  ctx.roundRect(o.x, o.y, o.w, EMB_HEADER, [4, 4, 0, 0]);
+  ctx.fill();
+  ctx.fillStyle = '#1d2533';
+  ctx.font = 'bold 8px Helvetica, Arial, sans-serif';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(`${embedKind(o)}: ${o.title || ''}`, o.x + 6, o.y + 10.5, o.w - 70);
+  ctx.fillStyle = '#6b7486';
+  ctx.font = '6.5px Helvetica, Arial, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(o.link ? 'linked · interactive' : 'interactive', o.x + o.w - 6, o.y + 10);
+  ctx.textAlign = 'left';
+  const im = getImage({ data: o.snapshot }, onImageLoad);
+  if (im) ctx.drawImage(im, o.x, o.y + EMB_HEADER, o.w, imgH);
+  if (o.showTable && o.table.length) {
+    let y = o.y + EMB_HEADER + imgH + 6;
+    ctx.font = '8px Helvetica, Arial, sans-serif';
+    for (const row of o.table) {
+      ctx.strokeStyle = '#e3e8f1';
+      ctx.beginPath(); ctx.moveTo(o.x + 6, y - 1.5); ctx.lineTo(o.x + o.w - 6, y - 1.5); ctx.stroke();
+      ctx.fillStyle = '#4a5468';
+      ctx.fillText(row.label, o.x + 8, y + 7, o.w * 0.6);
+      ctx.fillStyle = '#10151f';
+      ctx.textAlign = 'right';
+      ctx.fillText(row.value, o.x + o.w - 8, y + 7);
+      ctx.textAlign = 'left';
+      y += EMB_ROW;
+    }
+  }
+  ctx.strokeStyle = '#b9c3d6';
+  ctx.beginPath();
+  ctx.roundRect(o.x, o.y, o.w, o.h, 4);
+  ctx.stroke();
+  if (hasDraft) {
+    // marker: edited in the simulation but not applied to the document yet
+    const label = 'unapplied changes';
+    ctx.font = 'bold 7px Helvetica, Arial, sans-serif';
+    const w = ctx.measureText(label).width + 16;
+    ctx.fillStyle = '#ff9f1c';
+    ctx.beginPath();
+    ctx.roundRect(o.x + o.w - w - 5, o.y + EMB_HEADER + 5, w, 12, 6);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(o.x + o.w - w + 1, o.y + EMB_HEADER + 11, 2, 0, 6.3); ctx.fill();
+    ctx.fillText(label, o.x + o.w - w + 6, o.y + EMB_HEADER + 13.5);
   }
 }
 
@@ -231,6 +295,26 @@ export async function exportAnnotatedPdf(originalBytes, pagesAnn) {
           imgEmbeds.set(o.data, img);
         }
         page.drawImage(img, { x: ox + o.x, y: top - o.y - o.h, width: o.w, height: o.h });
+      } else if (o.type === 'embed') {
+        // snapshot flattened as an image; title and value table stay real text
+        const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+        const imgH = (o.w * o.imgH) / o.imgW;
+        page.drawRectangle({ x: ox + o.x, y: top - o.y - o.h, width: o.w, height: o.h, color: rgb(1, 1, 1), borderColor: rgb(0.73, 0.76, 0.84), borderWidth: 0.8 });
+        page.drawRectangle({ x: ox + o.x, y: top - o.y - EMB_HEADER, width: o.w, height: EMB_HEADER, color: rgb(0.93, 0.95, 0.98) });
+        page.drawText(winAnsi(`${embedKind(o)}: ${o.title || ''}`), { x: ox + o.x + 6, y: top - o.y - 10.5, size: 8, font: bold, color: rgb(0.11, 0.15, 0.2), maxWidth: o.w - 12 });
+        let img = imgEmbeds.get(o.snapshot);
+        if (!img) { img = await doc.embedPng(dataUrlBytes(o.snapshot)); imgEmbeds.set(o.snapshot, img); }
+        page.drawImage(img, { x: ox + o.x, y: top - o.y - EMB_HEADER - imgH, width: o.w, height: imgH });
+        if (o.showTable && o.table.length) {
+          let y = o.y + EMB_HEADER + imgH + 6;
+          for (const row of o.table) {
+            page.drawLine({ start: { x: ox + o.x + 6, y: top - (y - 1.5) }, end: { x: ox + o.x + o.w - 6, y: top - (y - 1.5) }, thickness: 0.5, color: rgb(0.89, 0.91, 0.95) });
+            page.drawText(winAnsi(row.label), { x: ox + o.x + 8, y: top - (y + 7), size: 8, font, color: rgb(0.29, 0.33, 0.41) });
+            const val = winAnsi(row.value);
+            page.drawText(val, { x: ox + o.x + o.w - 8 - font.widthOfTextAtSize(val, 8), y: top - (y + 7), size: 8, font, color: rgb(0.06, 0.08, 0.12) });
+            y += EMB_ROW;
+          }
+        }
       }
     }
   }

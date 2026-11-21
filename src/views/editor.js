@@ -9,6 +9,9 @@ import { analyseDocument, matchText, extractParams } from '../docs/matcher.js';
 import { SCENARIOS } from '../scenarios/index.js';
 import { CIRCUITS } from '../circuits/library.js';
 import { launchUrl } from './launch.js';
+import { makeEmbed, embedHeight, draftIds, syncLinksAfterHistory } from '../docs/embeds.js';
+import { saveSession, takeSession } from '../docs/session.js';
+import { insertSimulationDialog, zoomIn, finishTransition } from './embed-ui.js';
 
 const COLORS = ['#1d1d1f', '#e53935', '#1e88e5', '#43a047', '#fb8c00', '#8e24aa', '#ffffff'];
 const HL_COLORS = ['#fff176', '#a5d6a7', '#81d4fa', '#f8bbd0', '#ffcc80'];
@@ -20,6 +23,7 @@ const TOOLS = [
   ['text', '🔤', 'Text box (T)', 'KeyT'],
   ['shape', '⬜', 'Shapes (R)', 'KeyR'],
   ['image', '🖼', 'Insert image (I)', 'KeyI'],
+  ['embed', '🧪', 'Insert simulation (S): a live circuit or PLC scene as an object on the page', 'KeyS'],
 ];
 const allTargets = () => [
   ...SCENARIOS.map((s) => ({ kind: 'plc', id: s.id, name: s.name, icon: s.icon, params: s.params, match: s.match })),
@@ -52,8 +56,10 @@ export async function editorView(root, docId, q = {}) {
     tool: 'pen', color: COLORS[0], hlColor: HL_COLORS[0], size: 2.2, hlSize: 14, textSize: 14, shape: 'rect',
     zoom: 1, current: 0, selected: null, selPage: -1,
   };
-  const undo = [];
-  const redo = [];
+  const sess = takeSession(docId); // zoom, scroll and history from before a trip into a simulation
+  let drafts = await draftIds(docId); // embeds with unapplied changes
+  const undo = sess ? sess.undo : [];
+  const redo = sess ? sess.redo : [];
   let penSeen = false;
 
   // ---- layout -----------------------------------------------------------------
@@ -108,10 +114,22 @@ export async function editorView(root, docId, q = {}) {
       p.visible = e.isIntersecting;
       if (p.visible) renderPage(p);
     }
-    // current page = first mostly visible
-    const vis = pages.filter((p) => p.visible);
-    if (vis.length) setCurrent(vis[0].i, false);
   }, { root: scroller, rootMargin: '300px 0px' });
+  // current page = the one that fills most of the visible area
+  let curRaf = 0;
+  function computeCurrent() {
+    curRaf = 0;
+    const sr = scroller.getBoundingClientRect();
+    let best = -1; let bestArea = 0;
+    for (const p of pages) {
+      if (!p.visible) continue;
+      const r = p.wrap.getBoundingClientRect();
+      const area = Math.max(0, Math.min(r.bottom, sr.bottom) - Math.max(r.top, sr.top));
+      if (area > bestArea) { bestArea = area; best = p.i; }
+    }
+    if (best >= 0 && best !== st.current) setCurrent(best, false);
+  }
+  scroller.addEventListener('scroll', () => { if (!curRaf) curRaf = requestAnimationFrame(computeCurrent); }, { passive: true });
   pages.forEach((p) => io.observe(p.wrap));
 
   async function renderPage(p) {
@@ -160,7 +178,7 @@ export async function editorView(root, docId, q = {}) {
     const vis = visibleLayers();
     const objs = pageObjs(p.i).filter((o) => vis.has(o.layer));
     if (extra) objs.push(extra);
-    drawObjects(ctx, objs, { onImageLoad: () => drawAnn(p), selected: st.selPage === p.i ? st.selected : null });
+    drawObjects(ctx, objs, { onImageLoad: () => drawAnn(p), selected: st.selPage === p.i ? st.selected : null, drafts });
   }
   const redrawAll = () => pages.forEach((p) => drawAnn(p));
 
@@ -225,6 +243,7 @@ export async function editorView(root, docId, q = {}) {
   // ---- tools ---------------------------------------------------------------------
   function setTool(t) {
     if (t === 'image') { imgInput.click(); return; }
+    if (t === 'embed') { insertEmbed(); return; }
     st.tool = t;
     for (const [k, b] of Object.entries(toolBtns)) b.classList.toggle('active', k === t);
     pagesEl.dataset.tool = t;
@@ -311,6 +330,8 @@ export async function editorView(root, docId, q = {}) {
     select(null, -1);
     drawAnn(pages[i]);
     save();
+    // linked simulations follow the restored state
+    if (ann.pages[i].some((o) => o.type === 'embed' && o.link)) syncLinksAfterHistory(docId, i, ann.pages[i]);
   }
   function doUndo() {
     const u = undo.pop();
@@ -346,6 +367,64 @@ export async function editorView(root, docId, q = {}) {
     st.selPage = o ? i : -1;
     if (prev >= 0 && pages[prev]) drawAnn(pages[prev]);
     if (o) drawAnn(pages[i]);
+    updateEmbedBar();
+  }
+
+  // ---- embedded simulations ----------------------------------------------------------------
+  let embedBar = null;
+  function updateEmbedBar() {
+    if (embedBar) { embedBar.remove(); embedBar = null; }
+    const o = st.selected;
+    if (!o || o.type !== 'embed' || st.selPage < 0) return;
+    const p = pages[st.selPage];
+    embedBar = h('div', { class: 'embed-bar' },
+      h('button', { class: 'btn small primary', onclick: () => openEmbed(p, o) }, '▶ Open simulation'),
+      h('button', { class: 'btn small', title: 'Show or hide the table of key values', onclick: () => { const before = snap(p.i); o.showTable = !o.showTable; o.h = embedHeight(o); commit(p.i, before); updateEmbedBar(); } }, o.showTable ? 'Hide values' : 'Show values'),
+      drafts.has(o.id) ? h('span', { class: 'embed-banner dirty' }, 'unapplied changes') : null);
+    Object.assign(embedBar.style, { left: o.x * st.zoom + 'px', top: Math.max(0, o.y * st.zoom - 44) + 'px' });
+    p.wrap.append(embedBar);
+  }
+
+  function embedRect(p, o) {
+    const r = p.wrap.getBoundingClientRect();
+    return { left: r.left + o.x * st.zoom, top: r.top + o.y * st.zoom, width: o.w * st.zoom, height: o.h * st.zoom };
+  }
+
+  async function openEmbed(p, o) {
+    clearTimeout(saveT);
+    await saveAnnotations(docId, ann);
+    const q2 = `doc=${encodeURIComponent(docId)}&page=${p.i}&obj=${encodeURIComponent(o.id)}`;
+    await zoomIn(o.snapshot, embedRect(p, o));
+    navigate(o.kind === 'plc' ? `/plc/${o.state.scenarioId}?embed=1&${q2}` : `/circuit/embed?${q2}`);
+  }
+
+  async function insertEmbed() {
+    const data = await insertSimulationDialog();
+    if (!data) return;
+    const p = pages[st.current];
+    const w = Math.min(p.sz.w - 80, 330);
+    const o = makeEmbed({ ...data, layer: activeLayer, x: (p.sz.w - w) / 2, y: 0, w });
+    // place it in the part of the page that is on screen
+    const r = p.wrap.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    const visTop = Math.max(0, (sr.top - r.top) / st.zoom);
+    o.y = Math.max(20, Math.min(p.sz.h - o.h - 20, visTop + 40));
+    // do not cover an object that is already there
+    for (let k = 0; k < 6; k++) {
+      const hitObj = pageObjs(p.i).find((e) => e.type === 'embed' && o.y < e.y + e.h + 6 && o.y + o.h > e.y - 6 && o.x < e.x + e.w && o.x + o.w > e.x);
+      if (!hitObj || hitObj.y + hitObj.h + 10 + o.h > p.sz.h - 10) break;
+      o.y = hitObj.y + hitObj.h + 10;
+    }
+    const before = snap(p.i);
+    pageObjs(p.i).push(o);
+    commit(p.i, before);
+    setTool('select');
+    select(o, p.i);
+    // bring it into view if it landed below the visible part
+    const oy = p.wrap.offsetTop + o.y * st.zoom;
+    if (oy + o.h * st.zoom > scroller.scrollTop + scroller.clientHeight || oy < scroller.scrollTop) scroller.scrollTop = Math.max(0, oy - 90);
+    updateEmbedBar();
+    toast('Simulation inserted. Double-click it to open it.', 'ok', 3500);
   }
 
   // ---- pointer handling ------------------------------------------------------------------
@@ -364,6 +443,8 @@ export async function editorView(root, docId, q = {}) {
       const [x, y] = pt(e);
       setCurrent(p.i, false);
       const objs = pageObjs(p.i);
+      // an embedded simulation is always clickable: no ink on top of it by accident
+      if (st.tool !== 'select' && st.tool !== 'eraser' && [...objs].reverse().some((o) => o.type === 'embed' && editable(o) && hitTest(o, x, y, 0))) setTool('select');
       if (st.tool === 'pen' || st.tool === 'highlighter') {
         c.setPointerCapture(e.pointerId);
         const hl = st.tool === 'highlighter';
@@ -384,7 +465,7 @@ export async function editorView(root, docId, q = {}) {
         editText(p, hit || null, x, y);
       } else if (st.tool === 'select') {
         const sel = st.selected && st.selPage === p.i ? st.selected : null;
-        if (sel && (sel.type === 'image' || sel.type === 'text')) {
+        if (sel && (sel.type === 'image' || sel.type === 'text' || sel.type === 'embed')) {
           const b = bbox(sel);
           if (Math.abs(x - (b.x + b.w)) < 8 && Math.abs(y - (b.y + b.h)) < 8) {
             c.setPointerCapture(e.pointerId);
@@ -406,7 +487,7 @@ export async function editorView(root, docId, q = {}) {
           const [x, y] = pt(e);
           const sel = st.selected && st.selPage === p.i ? st.selected : null;
           let cursor = '';
-          if (sel && (sel.type === 'image' || sel.type === 'text')) {
+          if (sel && (sel.type === 'image' || sel.type === 'text' || sel.type === 'embed')) {
             const b = bbox(sel);
             if (Math.abs(x - (b.x + b.w)) < 8 && Math.abs(y - (b.y + b.h)) < 8) cursor = 'nwse-resize';
           }
@@ -447,6 +528,10 @@ export async function editorView(root, docId, q = {}) {
           const nw = Math.max(10, cur.orig.w + (x - cur.start[0]));
           o.w = nw;
           o.h = (nw * cur.orig.h) / cur.orig.w;
+        } else if (o.type === 'embed') {
+          o.w = Math.max(90, Math.min(p.sz.w - o.x, cur.orig.w + (x - cur.start[0])));
+          o.h = embedHeight(o);
+          updateEmbedBar();
         } else o.w = Math.max(30, cur.orig.w + (x - cur.start[0]));
         drawAnn(p);
       }
@@ -466,10 +551,13 @@ export async function editorView(root, docId, q = {}) {
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
     c.addEventListener('dblclick', (e) => {
-      if (st.tool !== 'select') return;
       const [x, y] = pt(e);
-      const hit = [...pageObjs(p.i)].reverse().find((o) => o.type === 'text' && editable(o) && hitTest(o, x, y));
-      if (hit) editText(p, hit, x, y);
+      const emb = [...pageObjs(p.i)].reverse().find((o) => o.type === 'embed' && editable(o) && hitTest(o, x, y, 0));
+      if (emb) { openEmbed(p, emb); return; }
+      if (st.tool !== 'select') return;
+      const hit = [...pageObjs(p.i)].reverse().find((o) => (o.type === 'text' || o.type === 'embed') && editable(o) && hitTest(o, x, y));
+      if (hit && hit.type === 'embed') openEmbed(p, hit);
+      else if (hit) editText(p, hit, x, y);
     });
   }
 
@@ -690,12 +778,28 @@ export async function editorView(root, docId, q = {}) {
   drawPanel();
   drawPageLinks();
   requestAnimationFrame(() => {
+    if (sess) {
+      // back from a simulation: same zoom, same scroll position
+      setZoom(sess.zoom);
+      scroller.scrollTop = sess.scrollTop;
+      scroller.scrollLeft = sess.scrollLeft;
+      let target = null;
+      if (q.obj) {
+        for (const p of pages) { const o = pageObjs(p.i).find((x) => x.id === q.obj); if (o) { target = embedRect(p, o); break; } }
+      }
+      finishTransition(false, target);
+      if (q.page != null && !q.back) gotoPage(Math.min(pages.length - 1, +q.page));
+      return;
+    }
+    finishTransition(true);
     fitWidth();
     const startPage = q.page != null ? Math.min(pages.length - 1, +q.page) : 0;
     if (startPage) setTimeout(() => gotoPage(startPage), 50);
   });
   const onResize = () => pages.filter((p) => p.visible).forEach(renderPage);
   window.addEventListener('resize', onResize);
+
+  window.__ed = { st, ann, scroller, pages, undo, redo, get drafts() { return drafts; } }; // handy for debugging from the console
 
   return {
     destroy() {
@@ -705,6 +809,8 @@ export async function editorView(root, docId, q = {}) {
       tio.disconnect();
       clearTimeout(saveT);
       saveAnnotations(docId, ann);
+      saveSession(docId, { zoom: st.zoom, scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft, undo, redo });
+      if (window.__ed && window.__ed.ann === ann) window.__ed = null;
       pdf.destroy();
     },
   };

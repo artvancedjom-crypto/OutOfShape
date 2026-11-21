@@ -11,6 +11,11 @@ import { getCircuit as libraryEntry } from '../circuits/library.js';
 import { parseSI, editSI, formatSI } from '../circuits/units.js';
 import { getDoc } from '../docs/store.js';
 import { parseLaunch } from './launch.js';
+import { loadEmbed, saveDraft, discardDraft, applyEmbed, stable } from '../docs/embeds.js';
+import { leaveDialog, finishTransition, coverWith } from './embed-ui.js';
+import { circuitSnapshot, circuitTable } from '../circuits/snapshot.js';
+import { ensureCatalog, registerDocDefs, defsUsedBy } from '../circuits/catalog.js';
+import { loadCircuit } from '../circuits/model.js';
 import { renderPalette, openCatalogManager, subcircuitDialog } from './catalog-ui.js';
 import { buildFlowGraph, solveFlow } from '../circuits/flow.js';
 import { FlowRenderer, FLOW_DEFAULTS } from '../circuits/particles.js';
@@ -111,7 +116,19 @@ export async function circuitView(root, id, q = {}) {
     navigate('/circuit/' + doc.id);
     return null;
   }
-  opened = await openCircuit(id);
+  // opened from an object embedded in a document: edit that instance as a draft
+  let emb = null;
+  let embBaseline = '';
+  if (id === 'embed') {
+    emb = await loadEmbed(q.doc, +q.page, q.obj);
+    if (emb) {
+      await ensureCatalog();
+      registerDocDefs(emb.state);
+      registerDocDefs(emb.applied);
+      embBaseline = stable(loadCircuit(emb.applied));
+      opened = { doc: loadCircuit(emb.state), modified: false };
+    }
+  } else opened = await openCircuit(id);
   if (!opened) { root.append(h('div', { class: 'page' }, h('h2', {}, 'Circuit not found'), h('a', { href: '#/lab?tab=circuits' }, 'Back to circuits'))); return null; }
   let doc = opened.doc;
   const templateId = isTemplateId(id) ? id : null;
@@ -160,9 +177,38 @@ export async function circuitView(root, id, q = {}) {
   const saveFlow = () => { try { localStorage.setItem(FLOW_KEY, JSON.stringify(flow)); } catch { /* ignore */ } };
   const badge = h('span', { class: 'badge' });
 
+  const embBannerEl = h('span', { class: 'embed-banner' });
+  const embedDirty = () => !!emb && stable(doc) !== embBaseline;
+  function embBanner() {
+    if (!emb) return;
+    const d = embedDirty();
+    embBannerEl.textContent = d ? 'Embedded · unapplied changes' : 'Embedded in document';
+    embBannerEl.classList.toggle('dirty', d);
+  }
+  async function leaveEmbed() {
+    clearTimeout(saveT);
+    let objId = emb.ref.objId;
+    const snap = await circuitSnapshot(doc, sim);
+    if (embedDirty()) {
+      const choice = await leaveDialog(emb.meta.name);
+      if (!choice) return;
+      if (choice === 'discard') await discardDraft(emb.ref);
+      else {
+        doc.defs = defsUsedBy(doc);
+        const r = await applyEmbed(emb.ref, { state: doc, snapshot: snap.dataUrl, imgW: snap.width, imgH: snap.height, table: circuitTable(doc, sim) }, choice);
+        objId = r.id;
+        toast(choice === 'apply' ? `Applied to the document${r.others ? ` and ${r.others} linked place(s)` : ''}` : 'Saved as a new version in the document', 'ok');
+      }
+    } else await discardDraft(emb.ref);
+    leaving = true;
+    coverWith(snap.dataUrl);
+    navigate(`/doc/${emb.ref.docId}?back=1&obj=${encodeURIComponent(objId)}`);
+  }
+
   const toolbar = h('div', { class: 'toolbar editor-tb' },
-    fromDoc ? h('a', { class: 'btn ghost', href: `#/doc/${fromDoc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${fromDoc.name}`) : h('a', { class: 'btn ghost', href: '#/lab?tab=circuits' }, '← Circuits'),
-    nameEl, badge,
+    emb ? h('button', { class: 'btn ghost', id: 'embed-back', onclick: () => leaveEmbed() }, `← Back to ${emb.meta.name}`)
+      : fromDoc ? h('a', { class: 'btn ghost', href: `#/doc/${fromDoc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${fromDoc.name}`) : h('a', { class: 'btn ghost', href: '#/lab?tab=circuits' }, '← Circuits'),
+    nameEl, badge, emb ? embBannerEl : null,
     h('div', { class: 'sep' }),
     h('div', { class: 'tool-group' },
       tool('select', '🖐', 'Select / move (V). Drag a box to select several, Shift adds.'),
@@ -294,7 +340,7 @@ export async function circuitView(root, id, q = {}) {
   }
 
   function drawBadge() {
-    badge.textContent = templateId ? (modified ? 'Template · edited copy' : 'Template') : 'My circuit';
+    badge.textContent = emb ? 'Embedded copy' : templateId ? (modified ? 'Template · edited copy' : 'Template') : 'My circuit';
     badge.className = 'badge ' + (templateId ? 'diff-intermediate' : 'diff-beginner');
   }
 
@@ -321,6 +367,7 @@ export async function circuitView(root, id, q = {}) {
 
   // ---- editor ------------------------------------------------------------------------------
   let modified = opened.modified || applied.length > 0;
+  let leaving = false;
   let keepInspector = false; // true while the inspector itself commits a value (keeps focus in the field)
   let saveT = 0;
   const editor = new CircuitEditor(canvasHost, {
@@ -329,7 +376,9 @@ export async function circuitView(root, id, q = {}) {
       modified = true;
       drawBadge();
       clearTimeout(saveT);
-      saveT = setTimeout(() => saveCircuit(doc), 400);
+      if (emb) saveT = setTimeout(() => { if (embedDirty()) saveDraft(emb.ref, doc); else discardDraft(emb.ref); }, 300);
+      else saveT = setTimeout(() => saveCircuit(doc), 400);
+      embBanner();
       drawMeasure();
       drawProblems();
       document.getElementById('crumb').textContent = `Lab › ${doc.name}`;
@@ -417,7 +466,7 @@ export async function circuitView(root, id, q = {}) {
         drawAll();
         toast('Template restored', 'ok');
       });
-    } else {
+    } else if (!emb) {
       item('🗑 Delete this circuit', async () => {
         const ok = await modal('Delete circuit?', h('p', {}, `“${doc.name}” is removed from this app.`), [{ label: 'Cancel', value: null }, { label: 'Delete', value: 'ok', primary: true }]);
         if (!ok) return;
@@ -521,7 +570,9 @@ export async function circuitView(root, id, q = {}) {
     drawInfo();
   }
   drawAll();
+  embBanner();
   editor.setTool('select');
+  requestAnimationFrame(() => finishTransition());
 
   // ---- frame loop ----------------------------------------------------------------------------------
   let raf = 0;
@@ -567,7 +618,7 @@ export async function circuitView(root, id, q = {}) {
     destroy() {
       cancelAnimationFrame(raf);
       clearTimeout(saveT);
-      if (modified) saveCircuit(doc);
+      if (emb) { if (!leaving && embedDirty()) saveDraft(emb.ref, doc); } else if (modified) saveCircuit(doc);
       particles.destroy();
       editor.destroy();
       document.querySelectorAll('.menu.ce-file, .menu.flow-menu').forEach((m) => m.remove());

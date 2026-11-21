@@ -12,6 +12,9 @@ import { ladderEditor } from '../ui/ladder-editor.js';
 import { ioPanel } from '../ui/io-panel.js';
 import { getDoc } from '../docs/store.js';
 import { parseLaunch } from './launch.js';
+import { loadEmbed, saveDraft, discardDraft, applyEmbed, stable } from '../docs/embeds.js';
+import { leaveDialog, finishTransition, coverWith } from './embed-ui.js';
+import { worldSnapshot, plcTable } from '../scenarios/snapshot.js';
 
 const SCAN_S = 0.02; // 20 ms scan cycle (simulated time)
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -23,6 +26,8 @@ export async function plcView(root, id, q = {}) {
   document.getElementById('crumb').textContent = `Lab › ${scn.name}`;
   const launch = parseLaunch(q);
   const doc = launch.docId ? await getDoc(launch.docId) : null;
+  // opened from an object embedded in a document: work on that instance, not on the lab copy
+  const emb = q.embed ? await loadEmbed(q.doc, +q.page, q.obj) : null;
 
   // ---- parameters (defaults ← document) ---------------------------------
   const params = {};
@@ -31,6 +36,7 @@ export async function plcView(root, id, q = {}) {
   for (const [k, v] of Object.entries(launch.params || {})) {
     if (k in params) { params[k] = v; fromDoc.add(k); }
   }
+  if (emb) Object.assign(params, emb.state.params || {});
 
   // ---- runtime -----------------------------------------------------------
   const rt = new PlcRuntime(scn.io);
@@ -42,7 +48,8 @@ export async function plcView(root, id, q = {}) {
   // ---- program state ------------------------------------------------------
   let program = null; // {id?, name, lang, source}
   const AUTOSAVE = 'autosave_' + scn.id;
-  if (q.program) {
+  if (emb) program = { name: emb.state.program.name || 'Embedded program', lang: emb.state.program.lang, source: clone(emb.state.program.source) };
+  else if (q.program) {
     const saved = await db.get('programs', q.program);
     if (saved) program = { id: saved.id, name: saved.name, lang: saved.lang, source: saved.source };
   }
@@ -73,8 +80,35 @@ export async function plcView(root, id, q = {}) {
   const progMenuBtn = h('button', { class: 'btn' }, 'Program ▾');
   const saveBtn = h('button', { class: 'btn' }, '💾 Save');
 
+  const embBannerEl = h('span', { class: 'embed-banner' });
+  function embBanner() {
+    if (!emb) return;
+    const d = embedDirty();
+    embBannerEl.textContent = d ? 'Embedded · unapplied changes' : 'Embedded in document';
+    embBannerEl.classList.toggle('dirty', d);
+  }
+  async function leaveEmbed() {
+    clearTimeout(saveWorking.t);
+    let objId = emb.ref.objId;
+    const snap = worldSnapshot(world);
+    if (embedDirty()) {
+      const choice = await leaveDialog(emb.meta.name);
+      if (!choice) return;
+      if (choice === 'discard') await discardDraft(emb.ref);
+      else {
+        const r = await applyEmbed(emb.ref, { state: embedState(), snapshot: snap.dataUrl, imgW: snap.width, imgH: snap.height, table: plcTable(sim) }, choice);
+        objId = r.id;
+        toast(choice === 'apply' ? `Applied to the document${r.others ? ` and ${r.others} linked place(s)` : ''}` : 'Saved as a new version in the document', 'ok');
+      }
+    } else await discardDraft(emb.ref);
+    coverWith(snap.dataUrl);
+    navigate(`/doc/${emb.ref.docId}?back=1&obj=${encodeURIComponent(objId)}`);
+  }
+
   const toolbar = h('div', { class: 'toolbar' },
-    doc ? h('a', { class: 'btn ghost', href: `#/doc/${doc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${doc.name}`) : h('a', { class: 'btn ghost', href: '#/lab' }, '← Lab'),
+    emb ? h('button', { class: 'btn ghost', id: 'embed-back', onclick: () => leaveEmbed() }, `← Back to ${emb.meta.name}`)
+      : doc ? h('a', { class: 'btn ghost', href: `#/doc/${doc.id}${launch.page != null ? '?page=' + launch.page : ''}` }, `← ${doc.name}`) : h('a', { class: 'btn ghost', href: '#/lab' }, '← Lab'),
+    emb ? embBannerEl : null,
     h('div', { class: 'tb-title' }, h('span', { class: 'tb-icon' }, scn.icon), h('b', {}, scn.name), h('span', { class: `badge diff-${scn.difficulty.toLowerCase()}` }, scn.difficulty)),
     h('div', { class: 'spacer' }),
     cpuBadge, runBtn, stopBtn, stepBtn, resetBtn, speedSel, camBtn);
@@ -118,8 +152,15 @@ export async function plcView(root, id, q = {}) {
   let activeTab = 'program';
   let ioP = null;
 
+  const embedState = () => ({ scenarioId: scn.id, params: { ...params }, program: { name: program.name, lang: program.lang, source: clone(program.source) } });
+  const embedDirty = () => !!emb && stable(embedState()) !== stable({ scenarioId: scn.id, params: { ...Object.fromEntries(scn.params.map((p) => [p.key, p.default])), ...(emb.applied.params || {}) }, program: { name: emb.applied.program.name || 'Embedded program', lang: emb.applied.program.lang, source: emb.applied.program.source } });
   function saveWorking() {
     clearTimeout(saveWorking.t);
+    if (emb) {
+      // changes to an embedded scene are a draft until they are applied to the document
+      saveWorking.t = setTimeout(() => { if (embedDirty()) saveDraft(emb.ref, embedState()); else discardDraft(emb.ref); embBanner(); }, 300);
+      return;
+    }
     saveWorking.t = setTimeout(() => {
       db.put('programs', { id: AUTOSAVE, autosave: true, scenarioId: scn.id, name: program.name, lang: program.lang, source: program.source, updated: Date.now() });
     }, 600);
@@ -192,11 +233,11 @@ export async function plcView(root, id, q = {}) {
       const val = h('span', { class: 'pval' });
       const inp = h('input', { type: 'range', min: p.min, max: p.max, step: p.step, value: params[p.key] });
       const show = () => { val.textContent = `${params[p.key]} ${p.unit}`; };
-      inp.addEventListener('input', () => { params[p.key] = +inp.value; show(); applySetpoints(); });
+      inp.addEventListener('input', () => { params[p.key] = +inp.value; show(); applySetpoints(); if (emb) saveWorking(); });
       show();
       pane.append(h('div', { class: 'param' }, h('div', { class: 'row between' }, h('label', {}, p.label, fromDoc.has(p.key) ? h('span', { class: 'chip tiny' }, 'from doc') : null, p.input ? h('span', { class: 'chip tiny' }, `→ ${p.input}`) : null), val), inp));
     }
-    pane.append(h('button', { class: 'btn small', onclick: () => { for (const p of scn.params) params[p.key] = p.default; applySetpoints(); drawTab(); } }, 'Restore defaults'));
+    pane.append(h('button', { class: 'btn small', onclick: () => { for (const p of scn.params) params[p.key] = p.default; applySetpoints(); drawTab(); if (emb) saveWorking(); } }, 'Restore defaults'));
     return pane;
   }
 
@@ -392,6 +433,8 @@ export async function plcView(root, id, q = {}) {
   setRunning(false);
   world.start();
   compileAndRun(true);
+  embBanner();
+  requestAnimationFrame(() => finishTransition());
 
   return {
     destroy() {

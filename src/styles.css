@@ -528,3 +528,10 @@ tr.forced .force { background: var(--warn); color: #fff; border-color: var(--war
 .cat-row.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .cat-detail { overflow: auto; display: grid; gap: 8px; align-content: start; }
 .cat-cols { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; }
+
+/* embedded simulations */
+.embed-zoom { position: fixed; z-index: 80; background: #fdfdfb; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); transition: all 0.22s cubic-bezier(0.2, 0.7, 0.2, 1); overflow: hidden; border-radius: 6px; pointer-events: none; }
+.embed-zoom img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.embed-bar { position: absolute; z-index: 4; display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: var(--shadow); white-space: nowrap; }
+.embed-banner { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.embed-banner.dirty { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--warn); border-color: var(--warn); }
