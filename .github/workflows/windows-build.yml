@@ -1,0 +1,37 @@
+# Builds the Windows desktop files (portable .exe, portable .zip, installer) and
+# attaches them to the workflow run as a downloadable artifact.
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Package (portable .exe, portable .zip, installer)
+        run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OutOfShape-Lab-windows
+          path: |
+            release/*.exe
+            release/*.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

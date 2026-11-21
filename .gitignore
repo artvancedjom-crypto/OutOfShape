@@ -2,5 +2,6 @@ node_modules/
 dist/
 release/
 public/pdfjs/
+tests/e2e/out/
 *.log
 .DS_Store

@@ -64,6 +64,10 @@ If the build stops with *"Cannot create symbolic link: A required privilege is n
 
 To release a new version, change `"version"` in `package.json` and run `npm.cmd run dist` again. The version appears in the file names, the window's About dialog and the installer.
 
+## Build on GitHub instead of your PC
+
+The workflow `.github/workflows/windows-build.yml` builds all three files on a Windows runner. It runs on every push to `main` and `claude/**`, on version tags (`v*`), and on demand (GitHub → Actions → *Windows build* → *Run workflow*). When the run is green, open it and download the artifact **OutOfShape-Lab-windows** at the bottom of the page. You must be signed in to GitHub to download artifacts; they are kept for 30 days.
+
 ## Where the data is stored
 
 The decision is made in `electron/main.cjs` before the app starts:
@@ -72,7 +76,7 @@ The decision is made in `electron/main.cjs` before the app starts:
 2. **Portable ZIP folder**: the folder contains a marker file `portable.flag` next to the .exe; data goes to `data\` in the same folder. Delete the marker and the app behaves like an installed copy.
 3. **Installed**: `%APPDATA%\OutOfShape Lab` (the normal per-user location).
 
-`data\` holds everything: documents, original PDFs, annotations, saved PLC programs (all inside `data\IndexedDB`), the theme, window size and position, settings and Chromium's caches. Take the whole app folder to another PC and the data comes along. Both portable forms use the same `data\` folder when they sit side by side.
+`data\` holds everything: documents, original PDFs, annotations (including embedded simulations), saved PLC programs, your circuits and your catalog parts (all inside `data\IndexedDB`), the theme, window size and position, settings and Chromium's caches. Take the whole app folder to another PC and the data comes along. Both portable forms use the same `data\` folder when they sit side by side.
 
 If the portable folder is not writable (read-only stick, or the folder was copied into `C:\Program Files`), the app says so at start and stores data in the user profile for that session.
 
@@ -82,12 +86,12 @@ The window position is saved with the data. On a different PC or monitor setup a
 
 ## Backup and moving data
 
-**⚙ → Export all data (ZIP)…** writes one file, `OutOfShape-Lab-backup-<date>.zip`, containing all documents with their original PDFs, annotations and layers, document links, saved PLC programs and working copies, thumbnails and the theme. **⚙ → Import data…** reads it back and offers:
+**⚙ → Export all data (ZIP)…** writes one file, `OutOfShape-Lab-backup-<date>.zip`, containing all documents with their original PDFs, annotations and layers (with embedded simulations), document links, saved PLC programs and working copies, your circuits, your catalog parts and favourites, thumbnails and the theme. **⚙ → Import data…** reads it back and offers:
 
 - **Merge**: keeps what is there and adds the backup. Items present in both are replaced by the backup copy.
 - **Replace everything**: clears the app's data first.
 
-The format is the same in the browser, portable and installed versions, so this is the way to move from one to another. The archive is plain: `manifest.json`, `docs.json`, `annotations.json`, `programs.json`, `thumbs.json`, `settings.json` and `files/<id>.pdf`.
+The format is the same in the browser, portable and installed versions, so this is the way to move from one to another. The archive is plain: `manifest.json`, `docs.json`, `annotations.json`, `programs.json`, `circuits.json`, `catalog.json`, `scenes.json`, `kv.json`, `thumbs.json`, `settings.json` and `files/<id>.pdf`. Backups made with version 1.0 (format 1) can still be imported.
 
 ## Opening PDFs from outside
 

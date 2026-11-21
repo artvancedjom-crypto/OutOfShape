@@ -13,7 +13,8 @@ There is no backend and there are no paid services. Everything, including PDF pa
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # unit tests: PLC engine, circuit solver, PDF matcher
+npm test           # 41 unit tests: PLC engine, circuit solver, netlist, catalog, PDF matcher
+npm run test:e2e   # end-to-end tests in a headless browser (needs Playwright, see tests/e2e/README.md)
 npm run build      # static production build in dist/ (open via any static server)
 npm run preview    # serve the production build
 ```
@@ -69,11 +70,21 @@ Each scenario has a working solution, an exercise starter, objectives, an I/O as
 - **Programs**: the working copy autosaves. You can also *Save*/*Save as*, export or import `.json`/`.st` files, and browse saved programs under Lab → My programs.
 - **Cameras**: an orbit/pan/zoom overview, and a first-person mode with WASD, Shift to run, pointer-lock mouse look (drag-look fallback), collisions, and clicking scene buttons through the crosshair.
 
-### 2. Circuits
+### 2. Circuit construction kit
 
-Series–parallel divider · LED with series resistor (Shockley model, overcurrent warning) · RC charge/discharge (transient with oscilloscope and 63 % marker) · NPN transistor switch (Ebers–Moll model; shows the cut-off, active and saturation regions) · relay self-holding circuit (coil hysteresis, flyback diode, NO/NC poles).
+Every circuit is fully editable, whether it started as a template or as an empty sheet.
 
-Every circuit has sliders (E12-snapped log sliders for R and C), clickable switches and momentary push buttons, node-voltage probes, per-component V/I readouts, glowing loads, and animated current flow along the wires.
+- **Editor:** place, move (attached wires follow), rotate (R), mirror (X), delete, duplicate, box select, copy/paste, grid snapping with Alt for free placement, zoom and pan, undo/redo for every action. Double-click a part to edit its values with SI prefixes (`4k7`, `100n`, `2.2u`).
+- **Wires:** click a pin, set corner points freely, end on a pin or on a wire (a junction dot appears). Drag segments and corner points afterwards. Right-angle routing is an option; manual paths are the default. Crossings without a dot are not connected. Net labels connect wire ends with the same name.
+- **Templates:** the five built-in circuits open as your own editable copy. *File → Reset to template* restores the original, *Save as…* stores a user circuit, *New empty circuit* starts from nothing.
+- **Solver for any topology:** Modified Nodal Analysis with Newton–Raphson, DC operating point and transient analysis with adaptive time steps. Models: R, L, C, potentiometer, voltage and current sources (DC, sine, square), diode and LED (Shockley), NPN/PNP (Ebers–Moll), N/P MOSFET (square law), switches, push buttons, relay coil with linked contacts, lamp (optional cold-filament resistance), fuse, DC motor, ammeter and voltmeter.
+- **Readable errors instead of crashes:** missing ground, short circuit across a source, source loops, floating parts, unconnected pins, singular equations and non-convergence are listed in plain language and highlighted in the schematic. The healthy part of the circuit keeps simulating.
+- **Measuring:** hover any part or wire for voltage, current and power. Place V, A and Ω probes. Up to four probes feed the oscilloscope.
+- **Current flow:** animated charges along every wire and through every part. Density and speed follow the logarithm of the current, so µA and A are both visible; sensitivity and speed are adjustable. Toggle between conventional current and electron flow. Optional overlays colour wires by potential and tint parts by power. Overloaded parts flash red and, at twice their rating, burn out until replaced.
+- **Component catalog:** eight categories, search and favourites. Each part shows its symbol, pins, parameters with units, rated limits, simulation model and characteristic curve. Add your own:
+  - a **variant** of any model (for example an LED fitted to a datasheet point, or a transistor with its hFE), with a validated form and live curve preview;
+  - a **subcircuit**: save a circuit as one part with a box symbol and outer pins taken from its net labels;
+  - export and import catalog entries as JSON.
 
 ### 3. PDF → interactive simulation
 
@@ -108,6 +119,17 @@ Every circuit has sliders (E12-snapped log sliders for R and C), clickable switc
 - **Persistence**: IndexedDB stores documents, original files, annotations, thumbnails, links and programs, so everything survives reloads.
 - **Palm rejection**: once a stylus has been used, touch input stops drawing.
 
+### 5. Simulations inside documents
+
+- **Embed:** the 🧪 tool inserts a circuit or a PLC scene on a page as an object with a snapshot and a table of key values.
+- **Jump in:** double-click the object. The simulation opens in exactly that state with a zoom transition.
+- **Jump back:** the back button returns to the same page, zoom and scroll position. If you changed something you choose *Apply changes*, *Save as new version* or *Discard*. Leaving any other way keeps a draft, and the object shows an "unapplied changes" marker.
+- **Ownership:** an embed is its own instance; the template and other documents are not touched. *Linked* embeds share one simulation, and applying a change updates every linked place.
+- **Undo/redo** in the document covers applying.
+- **PDF export** flattens the snapshot as an image and keeps the title and the value table as text.
+
+A PLC embed stores the scenario, its parameters and its program. It does not store the momentary process state (for example the current tank level).
+
 ## Architecture
 
 ```
@@ -127,6 +149,7 @@ src/
   platform/index.js       platform abstraction: browser vs desktop (file pickers, saving, native menu)
   styles.css              design tokens, light/dark themes, all view styles
   core/                   framework-free infrastructure
+    schema.js             versioned schemas with migrations for saved data
     db.js                 IndexedDB wrapper (docs, files, annotations, programs, thumbs)
     backup.js             export/import of all data as one ZIP
     dom.js                h() element helper, toast, modal, prompt, unit formatting
@@ -139,10 +162,19 @@ src/
     function-blocks.js    TON/TOF/TP/CTU/CTD/CTUD/R_TRIG/F_TRIG/SR/RS
     ladder.js             ladder model + ladder → ST compiler
     runtime.js            process image, forcing, scan cycle, watchdog
-  circuits/               circuit layer
-    mna.js                MNA solver: Newton–Raphson + damping, backward-Euler transient
-    library.js            circuit definitions (netlist + schematic layout + params + match rules)
-    schematic.js          SVG renderer with live readouts and current animation
+  circuits/               circuit construction kit
+    mna.js                solver: MNA + Newton–Raphson, adaptive transient, all device models
+    parts.js              part definitions: symbol, pins, parameters, limits, model
+    model.js              circuit document (versioned schema), geometry, builder
+    netlist.js            document → netlist: connectivity, subcircuit expansion, diagnostics
+    sim.js                live simulation: rebuild on edits, time scaling, probes, burn-out
+    editor.js             interactive schematic editor (SVG)
+    flow.js, particles.js wire currents (KCL per net) and the WebGL particle layer
+    catalog.js            user variants, subcircuits, favourites, JSON exchange, curves
+    templates.js          the built-in circuits as editable documents
+    snapshot.js           standalone picture + value table (for document embeds)
+    store.js, units.js    persistence; SI notation
+    library.js            template descriptions and PDF match rules
   three/                  3D layer
     bricks.js             studded brick geometry kit (merged + cached), lamps, buttons, labels
     world.js              renderer, lighting, baseplate, orbit + FPS cameras, picking, collisions
@@ -152,10 +184,12 @@ src/
     store.js              import pipeline + persistence API
     matcher.js            transparent keyword/regex matcher
     annotations.js        annotation model, canvas rendering, hit tests, pdf-lib export
+    embeds.js, session.js embedded simulations (drafts, apply, links) and editor session memory
     samples*.js           built-in sample documents
   ui/                     reusable widgets: ST code editor, ladder editor, live I/O panel
   views/                  library, lab browser, PLC workbench, circuit lab, document editor
-tests/                    node:test suites for the PLC engine, circuit solver and matcher
+tests/                    node:test suites: PLC engine, solver, circuit documents, catalog, matcher
+tests/e2e/                Playwright end-to-end tests (npm run test:e2e)
 ```
 
 **Key decisions**
@@ -185,9 +219,13 @@ tests/                    node:test suites for the PLC engine, circuit solver an
 - Persistence across reloads.
 - Dark and light themes.
 
+**Not built yet: the PLC construction kit.** The six PLC scenarios are still fixed scenes. Building your own plant from kit elements, automatic I/O addressing, the I/O mapping table, custom kit elements, fault injection and signal traces are open.
+
 **Known limitations**
+- Circuit editor: redundant wire loops inside one net show current on only one path (the split is physically undetermined). Operating a switch inside a subcircuit from outside is not possible. The solver uses dense matrices; very large dynamic circuits slow the simulation down (the display stays responsive).
+- Embedded PLC scenes keep parameters and program, not the momentary process state.
 - The ST subset has no arrays, structs, user-defined functions or function blocks, `POINTERs`, or multiple tasks/POUs. Ladder has no compare or math boxes; use ST for those (a ladder program can be switched to its generated ST).
-- Circuits are DC operating point plus transient only (no AC/frequency analysis or sine sources). The schematic layouts are fixed per circuit; there is no free-form schematic drawing.
+- Circuits are DC operating point plus transient only (no AC small-signal / frequency analysis).
 - PDF pages with a `/Rotate` entry are displayed and annotated unrotated. Scanned PDFs without a text layer can't be matched automatically (no OCR), but you can still link them manually.
 - Text annotations use the standard Helvetica font on export (WinAnsi characters only; others are transliterated). The eraser removes whole objects (no partial erasing), and there is no lasso selection.
 - Office formats (DOCX/PPTX) are not imported. Export them to PDF first.
